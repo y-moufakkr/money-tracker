@@ -264,3 +264,135 @@ TOTAL TTC       275,00`),
     ]);
   });
 });
+
+describe('real receipts (photos from the S22, lines and boxes as OCR returns them)', () => {
+  const ln = (text: string, x: number, y: number, width: number, height: number, confidence: number): OcrLine => ({
+    text,
+    confidence,
+    box: { x, y, width, height },
+  });
+  const merchants = [
+    { id: 'm1', name: 'Marjane' },
+    { id: 'm2', name: 'BIM' },
+  ];
+
+  const marjane: OcrLine[] = [
+    ln('Marjane', 319, 140, 191, 48, 1),
+    ln('MARJANE HOLDING', 362, 278, 430, 36, 1),
+    ln('MARJANE SAFI', 489, 328, 176, 31, 1),
+    ln('ICE : 001531173000020', 412, 372, 332, 32, 1),
+    ln('21/05/2017 15:45:10 84 3 2751', 362, 460, 428, 40, 1),
+    ln('(5)6221134002638 CHOCOLAT GALAXY', 157, 499, 472, 41, 1),
+    ln('2 x 4.95', 332, 552, 122, 37, 0.5),
+    ln('BISCUITERIE', 157, 594, 327, 42, 1),
+    ln('(5)8435123220332 FRITEUSE EMAILL', 189, 641, 469, 43, 1),
+    ln('MENAGE', 166, 686, 172, 32, 1),
+    ln('TOTA', 177, 761, 197, 30, 0.3),
+    ln('L', 392, 770, 34, 22, 0.5),
+    ln('NONT DROITS DE TIMBRE : 0.37', 185, 792, 381, 38, 0.5),
+    ln('IMBRE', 360, 892, 64, 28, 0.5),
+    ln("•ORE D'ARTICLES", 228, 970, 206, 38, 0.3),
+    ln('TVA POUR INFORMATION', 201, 1012, 260, 43, 1),
+    ln('5', 252, 1108, 16, 28, 0.5),
+    ln('total', 248, 1154, 68, 30, 1),
+    ln('20.00', 326, 1110, 74, 38, 1),
+    ln('HT', 537, 1082, 34, 30, 1),
+    ln('124.07', 511, 1122, 82, 36, 1),
+    ln('124.07', 508, 1166, 86, 40, 1),
+    ln('TAXE', 661, 1092, 62, 34, 1),
+    ln('24.83', 653, 1140, 76, 40, 1),
+    ln('24.83', 657, 1184, 72, 36, 1),
+    ln('00521004', 440, 1262, 170, 16, 0.3),
+    ln('9.90', 933, 560, 62, 34, 1),
+    ln('9.90', 831, 606, 118, 42, 1),
+    ln('139.00', 899, 653, 92, 37, 1),
+    ln('139.00', 771, 700, 174, 40, 1),
+    ln('149.27', 765, 782, 170, 34, 1),
+    ln('200.00', 869, 874, 90, 41, 1),
+    ln('0.37', 897, 920, 62, 40, 1),
+    ln('50.73', 885, 966, 74, 36, 1),
+    ln('3', 939, 1018, 18, 26, 0.5),
+    ln('-', 927, 1070, 16, 14, 0.5),
+    ln('TTC', 839, 1102, 48, 34, 1),
+    ln('148.90', 807, 1150, 88, 38, 1),
+    ln('148.90', 807, 1200, 92, 38, 1),
+  ];
+  const bim: OcrLine[] = [
+    ln('BIM MAROC', 151, 75, 178, 34, 1),
+    ln('Magasin GHAZA', 149, 117, 131, 33, 1),
+    ln('Avenue Gaza Lot 2422', 113, 137, 196, 32, 1),
+    ln('Al Wifaq Temara', 132, 164, 146, 20, 1),
+    ln('TEMARA', 178, 184, 62, 19, 1),
+    ln('15/11/2024', 35, 227, 85, 27, 1),
+    ln('TIME: 09:29:39', 38, 248, 117, 20, 1),
+    ln('LAIT 600G KEFIF', 32, 286, 132, 20, 1),
+    ln('YRT NATUR KEFIR 500G', 32, 304, 180, 20, 1),
+    ln('N° ticket: 0012', 246, 218, 159, 25, 1),
+    ln('20%', 256, 282, 34, 20, 1),
+    ln('20%', 256, 302, 34, 20, 1),
+    ln('22.90', 350, 281, 54, 21, 1),
+    ln('19.90', 350, 302, 54, 20, 1),
+    ln('SOUS TOTAL', 34, 344, 158, 16, 0.5),
+    ln('42.80', 350, 342, 56, 22, 1),
+    ln('TOTAL TTC', 34, 382, 92, 30, 0.5),
+    ln('Dont', 36, 414, 38, 18, 1),
+    ln('TVA', 94, 416, 30, 18, 1),
+    ln('CARTE BANCAIRE', 36, 451, 127, 21, 1),
+    ln('42.80 DH', 308, 386, 102, 41, 1),
+    ln('7.13 DH', 320, 424, 88, 20, 0.5),
+    ln('42.80', 350, 458, 56, 26, 1),
+    ln('NOMBRE ARTICLES', 35, 487, 137, 23, 1),
+    ln('2', 244, 498, 10, 16, 1),
+    ln('M:1826 P:001 C:77012 AZOUZI ZINEB', 35, 502, 310, 41, 0.5),
+    ln('MERCI DE VOTRE VISITE ET A BIENTOT:', 35, 523, 326, 38, 0.5),
+    ln('PATENTE:26901134', 35, 541, 148, 28, 0.5),
+    ln('Id.Fiscal: 1108770', 208, 554, 162, 18, 0.5),
+    ln('R.C.No :8633', 37, 563, 109, 20, 0.5),
+    ln('ICE', 38, 580, 28, 18, 1),
+    ln('CNSS', 206, 572, 40, 18, 1),
+    ln(': 1794987', 294, 565, 74, 25, 0.5),
+    ln(':001527053000001', 99, 583, 148, 29, 1),
+  ];
+
+  it('Marjane: letter-spaced "T O T A L" with its amount on the next row; the TVA table total is ignored', () => {
+    const r = parseReceipt(marjane, { today, merchants });
+    expect(r.totalMinor?.value).toBe(14927); // not 148,90 from the TVA table (it leaves out the stamp duty)
+    expect(r.merchantName).toMatchObject({ merchantId: 'm1' });
+  });
+
+  it('BIM: "TOTAL TTC / dont TVA" joined by the large amount; items without the VAT rate column', () => {
+    const r = parseReceipt(bim, { today, merchants });
+    expect(r.totalMinor?.value).toBe(4280);
+    expect(r.date.value).toBe('2024-11-15');
+    expect(r.merchantName).toMatchObject({ merchantId: 'm2' });
+    expect(r.items?.value.map((it) => [it.name, it.totalMinor])).toEqual([
+      ['Lait 600G Kefif', 2290],
+      ['Yrt Natur Kefir 500G', 1990],
+    ]);
+  });
+});
+
+describe('total labels', () => {
+  it('"dont TVA" after the total is part of it: the larger amount is the total', () => {
+    expect(parseReceipt(lines('TOTAL TTC 120,00 DONT TVA 20,00'), { today }).totalMinor?.value).toBe(12000);
+  });
+
+  it('a tax table row (HT, TVA, TTC columns) is not the total', () => {
+    const r = parseReceipt(lines('TOTAL 50,00\nTVA POUR INFORMATION\ntotal 41,67 8,33 50,00 50,00'), { today });
+    expect(r.totalMinor).toMatchObject({ value: 5000, source: 'TOTAL 50,00' });
+  });
+
+  it('letter-spaced labels are read, and still excluded when they say SOUS TOTAL', () => {
+    expect(parseReceipt(lines('T O T A L 42,80'), { today }).totalMinor?.value).toBe(4280);
+    expect(parseReceipt(lines('S O U S T O T A L 40,00\nTOTAL 42,80'), { today }).totalMinor?.value).toBe(4280);
+  });
+
+  it('an amount on the next row counts only if its box starts within the label row', () => {
+    const below: OcrLine[] = [
+      { text: 'TOTAL', box: { x: 40, y: 100, width: 120, height: 30 }, confidence: 1 },
+      { text: 'ESPECES', box: { x: 40, y: 140, width: 140, height: 30 }, confidence: 1 },
+      { text: '200,00', box: { x: 600, y: 140, width: 120, height: 30 }, confidence: 1 },
+    ];
+    expect(parseReceipt(below, { today }).totalMinor).toBeUndefined();
+  });
+});

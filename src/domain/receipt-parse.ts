@@ -76,7 +76,16 @@ export function merchantKey(s: string): string {
     .trim();
 }
 
-type Row = { text: string; norm: string; confidence: number | null; height: number | null };
+type Row = {
+  text: string;
+  norm: string;
+  confidence: number | null;
+  height: number | null;
+  /** Vertical band of the row (image pixels), when the lines have boxes. */
+  top: number | null;
+  bottom: number | null;
+  parts: OcrLine[];
+};
 
 /**
  * Joins lines printed on the same row (a label on the left, its amount on the right) when every
@@ -90,11 +99,15 @@ export function toRows(lines: (OcrLine | string)[]): Row[] {
     const text = parts.map((p) => p.text.trim()).join(' ');
     const confs = parts.map((p) => p.confidence).filter((c): c is number => typeof c === 'number' && c > 0);
     const heights = parts.map((p) => p.box?.height).filter((h): h is number => typeof h === 'number');
+    const boxed = parts.every((p) => p.box);
     return {
       text,
       norm: normalizeText(text),
       confidence: confs.length ? Math.min(...confs) : null,
       height: heights.length ? Math.max(...heights) : null,
+      top: boxed ? Math.min(...parts.map((p) => p.box!.y)) : null,
+      bottom: boxed ? Math.max(...parts.map((p) => p.box!.y + p.box!.height)) : null,
+      parts,
     };
   };
   if (!ls.length || !ls.every((l) => l.box && l.box.height > 0)) return ls.map((l) => row([l]));
@@ -174,21 +187,49 @@ const CARD = /\bCB\b|CARTE|VISA|MASTERCARD|\bTPE\b/;
 
 type TotalCandidate = { minor: number; rank: number; row: number; source: string; confidence: number | null };
 
+/** "TOTAL TTC DONT TVA": what follows "dont" (of which) is a part of the total, not another line. */
+const DONT = /\bDONT\b.*$/;
+
+/** "T O T A L" read as "TOTA L": joins runs of short words when one of them is a single letter. */
+function joinSpacedLetters(norm: string): string {
+  return norm.replace(/\b[A-Z]{1,4}(?: [A-Z]{1,4})+\b/g, (m) => (/\b[A-Z]\b/.test(m) ? m.replace(/ /g, '') : m));
+}
+
 function totalRank(norm: string): number {
-  if (NOT_TOTAL.test(norm)) return 0;
-  for (const l of TOTAL_LABELS) if (l.re.test(norm)) return l.rank;
+  const label = norm.replace(DONT, '');
+  const joined = joinSpacedLetters(label);
+  if (NOT_TOTAL.test(label) || NOT_TOTAL.test(joined)) return 0;
+  for (const text of [label, joined]) for (const l of TOTAL_LABELS) if (l.re.test(text)) return l.rank;
   return 0;
 }
 
 const lettersIn = (s: string) => (s.match(/[A-Z]/g) ?? []).length;
 
-/** An amount alone on its row (the label was printed on the row above). */
-function loneAmount(r: Row, currency: string): AmountToken | null {
-  const amounts = findAmounts(r.text, currency);
+/** An amount alone in this text (the label was printed elsewhere). */
+function loneAmount(text: string, currency: string): AmountToken | null {
+  const amounts = findAmounts(text, currency);
   if (amounts.length !== 1) return null;
-  const rest = r.norm.replace(normalizeText(amounts[0].text), '').replace(/\b(DH|DHS|MAD)\b/g, '');
+  const rest = normalizeText(text).replace(normalizeText(amounts[0].text), '').replace(/\b(DH|DHS|MAD)\b/g, '');
   return lettersIn(rest) === 0 ? amounts[0] : null;
 }
+
+/**
+ * A total printed larger than its label sits a little lower, so OCR puts it on the next row:
+ * an amount on its own whose box starts within the label's row.
+ */
+function besideAmount(label: Row, next: Row, currency: string): AmountToken | null {
+  if (label.top === null || label.bottom === null) return null;
+  const end = label.bottom - 0.2 * (label.bottom - label.top);
+  for (const p of next.parts) {
+    if (!p.box || p.box.y < label.top || p.box.y >= end) continue;
+    const a = loneAmount(p.text, currency);
+    if (a) return a;
+  }
+  return null;
+}
+
+/** Rows with this many amounts are tax tables (HT, TVA, TTC columns), not the amount paid. */
+const TABLE_AMOUNTS = 3;
 
 function findTotal(rows: Row[], currency: string) {
   const candidates: TotalCandidate[] = [];
@@ -196,13 +237,16 @@ function findTotal(rows: Row[], currency: string) {
     const rank = totalRank(r.norm);
     if (!rank) return;
     const amounts = findAmounts(r.text, currency).filter((a) => !a.negative && a.minor > 0);
+    if (amounts.length >= TABLE_AMOUNTS) return;
     if (amounts.length) {
-      const a = amounts[amounts.length - 1];
+      // With "dont TVA …" on the row, the total is the larger amount; otherwise the last one.
+      const a = DONT.test(r.norm) ? amounts.reduce((m, x) => (x.minor > m.minor ? x : m)) : amounts[amounts.length - 1];
       candidates.push({ minor: a.minor, rank, row: i, source: r.text, confidence: r.confidence });
     } else if (rows[i + 1]) {
-      const a = loneAmount(rows[i + 1], currency);
+      const next = rows[i + 1];
+      const a = loneAmount(next.text, currency) ?? besideAmount(r, next, currency);
       if (a && a.minor > 0) {
-        candidates.push({ minor: a.minor, rank, row: i, source: `${r.text} ${rows[i + 1].text}`, confidence: rows[i + 1].confidence });
+        candidates.push({ minor: a.minor, rank, row: i, source: `${r.text} ${next.text}`, confidence: next.confidence });
       }
     }
   });
@@ -439,6 +483,7 @@ function cleanItemName(s: string): string {
   return titleCase(
     s
       .replace(/^\s*\d{5,}\s*/, '') // article code / EAN
+      .replace(/\s+\d{1,2}(?:[.,]\d{1,2})?\s?%\s*$/, '') // VAT rate column
       .replace(/\s+[A-D*]$/i, '') // tax code after the name
       .replace(/[*#=_~|]+/g, ' ')
       .replace(/\s+/g, ' ')
