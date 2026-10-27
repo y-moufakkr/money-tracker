@@ -1,0 +1,7 @@
+{
+  "name": "receipt-ocr",
+  "version": "1.0.0",
+  "description": "On-device receipt text recognition: ML Kit (bundled) on Android, Apple Vision on iOS",
+  "private": true,
+  "license": "MIT"
+}
