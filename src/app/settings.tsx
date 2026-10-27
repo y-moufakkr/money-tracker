@@ -6,43 +6,72 @@ import { AccountRow } from '@/components/account-row';
 import { DATABASE_NAME } from '@/db/expo';
 import { SCHEMA_VERSION } from '@/db/migrations';
 import { todayISO } from '@/domain/dates';
-import { formatRate, parseRateMicros, SUPPORTED_CURRENCIES } from '@/domain/money';
+import { bpToInput, formatRate, parsePercentBp, parseRateMicros, SUPPORTED_CURRENCIES } from '@/domain/money';
 import { useAccountBalances, useCompanies, useLedgerMutation, useRates } from '@/hooks/data';
-import { updateCompany } from '@/services/accounts';
+import { updateCompany, type CompanyInput } from '@/services/accounts';
+import { notify } from '@/lib/confirm';
 import { setRate } from '@/services/fx';
-import { ChipGroup, TextField } from '@/ui/fields';
+import { ChipGroup, Field, TextField } from '@/ui/fields';
 import { Banner, Button, Card, Chip, Divider, ListItem, Row, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
-import type { Company } from '@/domain/types';
+import type { Company, TvaMode } from '@/domain/types';
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function CompanyEditor({ company }: { company: Company }) {
+  const c = useColors();
   const [name, setName] = useState(company.name);
-  const [pct, setPct] = useState(String(company.ownershipBp / 100));
-  const save = useLedgerMutation((db, v: { name: string; bp: number }) => updateCompany(db, company.id, { name: v.name, ownershipBp: v.bp }));
-  const bp = Math.round(Number(pct.replace(',', '.')) * 100);
-  const valid = Number.isFinite(bp) && bp >= 0 && bp <= 10000;
-  const dirty = name !== company.name || bp !== company.ownershipBp;
+  const [pct, setPct] = useState(bpToInput(company.ownershipBp));
+  const [month, setMonth] = useState(company.fiscalYearStartMonth);
+  const [tvaMode, setTvaMode] = useState<TvaMode>(company.tvaMode);
+  // The id travels in the input so the mutation never reads props during render (React Compiler).
+  const save = useLedgerMutation((db, v: { id: string; input: CompanyInput }) => updateCompany(db, v.id, v.input));
+  const bp = parsePercentBp(pct);
+  const dirty = name !== company.name || bp !== company.ownershipBp || month !== company.fiscalYearStartMonth || tvaMode !== company.tvaMode;
+  const companyId = company.id;
   return (
     <Card style={{ marginBottom: space.sm }}>
       <TextField label="Company name" value={name} onChangeText={setName} />
       <TextField
         label="Your ownership"
-        hint="Used later to estimate your share of distributions. It does not entitle you to withdraw company cash."
+        hint="Used to estimate your share of distributions. It does not entitle you to withdraw company cash."
         value={pct}
         onChangeText={setPct}
         keyboardType="decimal-pad"
-        error={valid ? null : 'Between 0 and 100'}
+        error={bp === null ? 'Between 0 and 100' : null}
         trailing={<Text tone="muted">%</Text>}
       />
-      {dirty && (
-        <Button
-          compact
-          label="Save company"
-          disabled={!valid}
-          loading={save.isPending}
-          onPress={() => save.mutate({ name, bp }, { onError: (e) => Alert.alert('Could not save', e.message) })}
-        />
-      )}
+      <Field label="Fiscal year starts in" hint="Used when creating fiscal years.">
+        <ChipGroup>
+          {MONTHS.map((m, i) => (
+            <Chip key={m} label={m} selected={month === i + 1} onPress={() => setMonth(i + 1)} color={c.business} />
+          ))}
+        </ChipGroup>
+      </Field>
+      <Field label="TVA in recorded amounts" hint="Bank movements usually include TVA. The tax estimate then removes the TVA you enter per year.">
+        <ChipGroup>
+          <Chip label="Included (TTC)" selected={tvaMode === 'ttc'} onPress={() => setTvaMode('ttc')} color={c.business} />
+          <Chip label="None (HT / not liable)" selected={tvaMode === 'ht'} onPress={() => setTvaMode('ht')} color={c.business} />
+        </ChipGroup>
+      </Field>
+      <Row>
+        <Button compact kind="ghost" label="Open dashboard" onPress={() => router.push(`/company/${companyId}`)} />
+        {dirty && (
+          <Button
+            compact
+            label="Save company"
+            disabled={bp === null}
+            loading={save.isPending}
+            onPress={() =>
+              bp !== null &&
+              save.mutate(
+                { id: companyId, input: { name, ownershipBp: bp, fiscalYearStartMonth: month, tvaMode } },
+                { onError: (e) => notify('Could not save', e.message) },
+              )
+            }
+          />
+        )}
+      </Row>
     </Card>
   );
 }

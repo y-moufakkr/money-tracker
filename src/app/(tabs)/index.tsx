@@ -4,10 +4,11 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { BudgetCard } from '@/components/budget-card';
 import { BarRow } from '@/components/breakdown';
 import { InsightList } from '@/components/insight-list';
+import { ThreeTotalsCard } from '@/components/three-totals';
 import { TransactionRow } from '@/components/transaction-row';
 import { formatMonthLabel, presetRange, todayISO } from '@/domain/dates';
 import { formatMoney } from '@/domain/money';
-import { useBudgetStatuses, useInsights, useMoneySummary, usePeriodSummary, useTransactions } from '@/hooks/data';
+import { useBudgetStatuses, useInsights, useMoneySummary, usePeriodSummary, useThreeTotals, useTransactions } from '@/hooks/data';
 import { openTransactions } from '@/lib/drill';
 import { NO_CATEGORY } from '@/services/queries';
 import { Icon } from '@/ui/icon';
@@ -36,6 +37,7 @@ export default function HomeScreen() {
   const recent = useTransactions({ limit: 6 });
   const insights = useInsights();
   const budgets = useBudgetStatuses();
+  const totals = useThreeTotals();
 
   const refreshing = summary.isRefetching || period.isRefetching;
   const refresh = () => {
@@ -44,6 +46,7 @@ export default function HomeScreen() {
     recent.refetch();
     insights.refetch();
     budgets.refetch();
+    totals.refetch();
   };
 
   if (summary.isLoading || period.isLoading) {
@@ -56,7 +59,11 @@ export default function HomeScreen() {
 
   const p = summary.data!.personal;
   const s = period.data!;
-  const companyTotal = summary.data!.companies.reduce((sum, co) => sum + co.total, 0);
+  const hasCompany = summary.data!.companies.length > 0;
+  const personalDetail =
+    (p.reserved > 0 ? `Reserved for goals ${formatMoney(p.reserved)} · Unallocated ${formatMoney(p.available)}` : `Available ${formatMoney(p.available)}`) +
+    (p.liabilities > 0 ? ` · Owed ${formatMoney(p.liabilities)}` : '') +
+    (p.unconverted.length > 0 ? ` · ${p.unconverted.length} foreign location(s) not counted` : '');
   const noAccounts = p.accounts.length === 0 && summary.data!.companies.length === 0;
   const topCats = s.byCategory.slice(0, 5);
 
@@ -78,34 +85,28 @@ export default function HomeScreen() {
         </Card>
       ) : (
         <>
-          <Card tone="primary" onPress={() => router.push('/money')} style={{ gap: 4 }}>
-            <Row style={{ justifyContent: 'space-between' }}>
-              <Text variant="label" color={c.primary}>
-                My money now
-              </Text>
-              <Row gap={2}>
+          {hasCompany && totals.data ? (
+            <>
+              <ThreeTotalsCard t={totals.data} compact aDetail={personalDetail} />
+            </>
+          ) : (
+            <Card tone="primary" onPress={() => router.push('/money')} style={{ gap: 4 }}>
+              <Row style={{ justifyContent: 'space-between' }}>
                 <Text variant="label" color={c.primary}>
-                  Details
+                  My money now
                 </Text>
-                <Icon name="chevron_right" size={18} color={c.primary} />
+                <Row gap={2}>
+                  <Text variant="label" color={c.primary}>
+                    Details
+                  </Text>
+                  <Icon name="chevron_right" size={18} color={c.primary} />
+                </Row>
               </Row>
-            </Row>
-            <Amount minor={p.liquid} variant="display" />
-            <Text variant="caption" tone="muted">
-              {p.reserved > 0 ? `Reserved for goals ${formatMoney(p.reserved)} · Unallocated ${formatMoney(p.available)}` : `Available ${formatMoney(p.available)}`}
-              {p.liabilities > 0 ? ` · Owed ${formatMoney(p.liabilities)}` : ''}
-              {p.unconverted.length > 0 ? ` · ${p.unconverted.length} foreign location(s) not counted` : ''}
-            </Text>
-          </Card>
-
-          {summary.data!.companies.length > 0 && (
-            <Pressable onPress={() => router.push('/money')} style={[styles.company, { backgroundColor: c.businessSoft }]}>
-              <Icon name="domain" size={18} color={c.business} />
-              <Text variant="label" color={c.business} style={{ flex: 1 }}>
-                Company cash & bank (separate)
+              <Amount minor={p.liquid} variant="display" />
+              <Text variant="caption" tone="muted">
+                {personalDetail}
               </Text>
-              <Amount minor={companyTotal} variant="label" color={c.business} />
-            </Pressable>
+            </Card>
           )}
 
           <SectionHeader title="This month" action={{ label: 'Analytics', onPress: () => router.push('/analytics') }} />
@@ -187,12 +188,4 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   stats: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   stat: { flexBasis: '48%', flexGrow: 1, padding: space.md, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, gap: 2 },
-  company: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    padding: space.md,
-    borderRadius: radius.md,
-    marginTop: space.sm,
-  },
 });

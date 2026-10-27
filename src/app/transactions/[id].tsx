@@ -4,10 +4,10 @@ import { Alert, ScrollView, View } from 'react-native';
 import { formatDateLabel } from '@/domain/dates';
 import { formatMoney, formatQuantity } from '@/domain/money';
 import { transferClassLabel } from '@/domain/types';
-import { useLedgerMutation, useTags, useTransaction } from '@/hooks/data';
+import { useLedgerMutation, useTags, useTransaction, useTransactionLinks } from '@/hooks/data';
 import { closeScreen } from '@/lib/navigation';
 import { deleteTransaction } from '@/services/ledger';
-import { Amount, Banner, Button, Card, Divider, EmptyState, IconBadge, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
+import { Amount, Banner, Button, Card, Divider, EmptyState, IconBadge, ListItem, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
 function Line({ label, children }: { label: string; children: React.ReactNode }) {
@@ -27,6 +27,7 @@ export default function TransactionScreen() {
   const { data: t, isLoading } = useTransaction(id);
   const remove = useLedgerMutation((db, txId: string) => deleteTransaction(db, txId));
   const tagNames = new Map((useTags(true).data ?? []).map((g) => [g.id, g.name]));
+  const links = useTransactionLinks(id).data;
 
   if (isLoading) return <Loading />;
   if (!t) return <EmptyState icon="error" title="Transaction not found" message="It may have been deleted." />;
@@ -50,7 +51,9 @@ export default function TransactionScreen() {
         ? 'The balance check it came from will be re-opened for investigation.'
         : t.fees.length
           ? 'Its transfer fee will be deleted too. Balances are recalculated.'
-          : 'Balances are recalculated immediately.',
+          : links && (links.liabilities.length > 0 || links.distributions.length > 0)
+            ? 'It pays a company obligation or distribution, which will show as unpaid again. Balances are recalculated.'
+            : 'Balances are recalculated immediately.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: () => remove.mutate(t.id, { onSuccess: () => closeScreen(), onError: (e) => Alert.alert('Not possible', e.message) }) },
@@ -102,6 +105,35 @@ export default function TransactionScreen() {
           {t.tags.length > 0 && <Line label="Tags">{t.tags.map((g) => `#${g.name}`).join(' ')}</Line>}
           {t.note && <Line label="Note">{t.note}</Line>}
         </Card>
+
+        {links && (links.liabilities.length > 0 || links.distributions.length > 0) && (
+          <View style={{ marginTop: space.md }}>
+            <Card padded={false}>
+              {links.liabilities.map((l) => (
+                <ListItem
+                  key={l.id}
+                  icon="pending_actions"
+                  iconColor={c.business}
+                  title={`Pays: ${l.label}`}
+                  subtitle={`${formatMoney(l.amountMinor, t.currency)} of this payment`}
+                  onPress={() => router.push(`/company/obligation/${l.id}`)}
+                  chevron
+                />
+              ))}
+              {links.distributions.map((d) => (
+                <ListItem
+                  key={d.id}
+                  icon="gavel"
+                  iconColor={c.business}
+                  title="Pays an approved distribution"
+                  subtitle={`Approved ${formatDateLabel(d.approvedAt)}. Counted once, as this transfer.`}
+                  onPress={() => router.push(`/company/distribution/${d.id}`)}
+                  chevron
+                />
+              ))}
+            </Card>
+          </View>
+        )}
 
         {isFee && (
           <View style={{ marginTop: space.md }}>

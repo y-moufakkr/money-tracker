@@ -5,9 +5,10 @@ import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 
 import { AccountRow } from '@/components/account-row';
 import { Breakdown } from '@/components/breakdown';
+import { ThreeTotalsCard } from '@/components/three-totals';
 import { formatDateLabel, isoToLocalDate, localDateToISO, todayISO } from '@/domain/dates';
 import { formatMoney } from '@/domain/money';
-import { useMoneySummary } from '@/hooks/data';
+import { useMoneySummary, useThreeTotals } from '@/hooks/data';
 import { Icon } from '@/ui/icon';
 import { Amount, Banner, Button, Card, Divider, EmptyState, IconButton, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
 import { TabScreen } from '@/ui/layout';
@@ -54,6 +55,7 @@ export default function MoneyScreen() {
   const [asOf, setAsOf] = useState(today);
   const [iosPicker, setIosPicker] = useState(false);
   const { data, isLoading, refetch, isRefetching } = useMoneySummary(asOf === today ? undefined : asOf);
+  const totals = useThreeTotals();
   const historical = asOf !== today;
 
   const pickDate = () => {
@@ -217,20 +219,27 @@ export default function MoneyScreen() {
             )}
           </Card>
 
+          {!historical && totals.data && totals.data.b.length > 0 && (
+            <>
+              <SectionHeader title="Personal · company · potential payout" />
+              <ThreeTotalsCard t={totals.data} />
+            </>
+          )}
+
           {data.companies.map((co) => (
             <View key={co.company.id}>
-              <SectionHeader title={`Company · ${co.company.name}`} />
-              <Card tone="business" style={{ gap: space.xs, marginBottom: space.sm }}>
+              <SectionHeader title={`Company · ${co.company.name}`} action={{ label: 'Dashboard', onPress: () => router.push(`/company/${co.company.id}`) }} />
+              <Card tone="business" style={{ gap: space.xs, marginBottom: space.sm }} onPress={() => router.push(`/company/${co.company.id}`)}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <Text variant="label" color={c.business}>
-                    Company cash & bank
+                    Company cash & bank{historical ? '' : ' today'}
                   </Text>
                   <Icon name="domain" size={18} color={c.business} />
                 </Row>
                 <Amount minor={co.total} variant="title" color={c.business} />
                 <Text variant="caption" tone="muted">
-                  Belongs to the company, not to you. Not included in your personal money. Obligations and
-                  distributable profit come in Phase 3.
+                  Belongs to the company, not to you. Not included in your personal money. Cash is not profit: open the
+                  dashboard for obligations, profit and distributable profit.
                 </Text>
                 {co.unconverted.length > 0 && (
                   <Text variant="caption" color={c.warning}>

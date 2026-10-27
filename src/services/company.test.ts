@@ -228,7 +228,7 @@ describe('tax estimate with user-entered rates', () => {
     const late = today > fy.startDate;
     let r = await fiscalYearReport(db, fyId);
     expect(r.status.complete).toBe(!late);
-    if (late) expect(r.status.reasons[0]).toMatch(/New cash box starts on/);
+    if (late) expect(r.status.reasons[0]).toMatch(/New cash box starts today/);
     await saveTaxAssumptions(db, fyId, assumptions({ preTrackingRevenueMinor: 0, preTrackingExpensesMinor: 0 }));
     r = await fiscalYearReport(db, fyId);
     expect(r.status.complete).toBe(true);

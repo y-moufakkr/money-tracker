@@ -5,7 +5,7 @@ import { expoDb } from '@/db/expo';
 import type { Db } from '@/db/types';
 import type { DateRange } from '@/domain/dates';
 import type { Account, CategoryKind, Ownership } from '@/domain/types';
-import { getAccount, listAccounts, listCompanies, listInstruments } from '@/services/accounts';
+import { getAccount, getCompany, listAccounts, listCompanies, listInstruments } from '@/services/accounts';
 import { listMerchants, listProducts, loadExpenseFacts, merchantDetail, productDetail } from '@/services/analytics';
 import { accountBalance, accountBalances, accountLedger, accountReservations, balanceHistory, moneySummary } from '@/services/balances';
 import { budgetStatuses, getBudget } from '@/services/budgets';
@@ -24,6 +24,11 @@ import {
   type TransactionFilter,
 } from '@/services/queries';
 import { listReconciliations } from '@/services/reconciliation';
+import { fiscalYearReport, listFiscalYears, listReserves } from '@/services/company';
+import { companyAnalytics } from '@/services/company-analytics';
+import { getDistribution, listDistributions, listSimulations, unmatchedDividendTransfers } from '@/services/distributions';
+import { getLiability, listLiabilities, paymentCandidates, transactionLinks } from '@/services/obligations';
+import { companyDashboard, threeTotals } from '@/services/overview';
 
 const wrapped = new WeakMap<SQLiteDatabase, Db>();
 
@@ -224,6 +229,97 @@ export function useMerchants(search: string) {
 export function useMerchant(id: string | undefined) {
   const db = useDb();
   return useQuery({ queryKey: [LEDGER, 'merchant', id], queryFn: () => merchantDetail(db, id!), enabled: !!id });
+}
+
+// ---------------------------------------------------------------------------
+// Company money (Phase 3)
+
+export function useCompany(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'company', id], queryFn: () => getCompany(db, id!), enabled: !!id });
+}
+
+export function useCompanyDashboard(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'company-dashboard', id], queryFn: () => companyDashboard(db, id!), enabled: !!id });
+}
+
+export function useThreeTotals() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'three-totals'], queryFn: () => threeTotals(db) });
+}
+
+export function useFiscalYears(companyId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'fiscal-years', companyId], queryFn: () => listFiscalYears(db, companyId!), enabled: !!companyId });
+}
+
+export function useFiscalYearReport(fiscalYearId: string | undefined) {
+  const db = useDb();
+  return useQuery({
+    queryKey: [LEDGER, 'fiscal-year-report', fiscalYearId],
+    queryFn: () => fiscalYearReport(db, fiscalYearId!),
+    enabled: !!fiscalYearId,
+  });
+}
+
+export function useLiabilities(companyId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'liabilities', companyId], queryFn: () => listLiabilities(db, { companyId }), enabled: !!companyId });
+}
+
+export function useLiability(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'liability', id], queryFn: () => getLiability(db, id!), enabled: !!id });
+}
+
+export function usePaymentCandidates(liabilityId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'payment-candidates', liabilityId], queryFn: () => paymentCandidates(db, liabilityId!), enabled: !!liabilityId });
+}
+
+export function useReserves(companyId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'reserves', companyId], queryFn: () => listReserves(db, companyId!), enabled: !!companyId });
+}
+
+export function useSimulations(companyId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'simulations', companyId], queryFn: () => listSimulations(db, companyId!), enabled: !!companyId });
+}
+
+export function useDistributions(companyId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'distributions', companyId], queryFn: () => listDistributions(db, { companyId }), enabled: !!companyId });
+}
+
+export function useDistribution(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'distribution', id], queryFn: () => getDistribution(db, id!), enabled: !!id });
+}
+
+export function useDividendCandidates(companyId: string | undefined) {
+  const db = useDb();
+  return useQuery({
+    queryKey: [LEDGER, 'dividend-candidates', companyId],
+    queryFn: () => unmatchedDividendTransfers(db, companyId!),
+    enabled: !!companyId,
+  });
+}
+
+export function useCompanyAnalytics(companyId: string | undefined, range: DateRange) {
+  const db = useDb();
+  return useQuery({
+    queryKey: [LEDGER, 'company-analytics', companyId, range.from, range.to],
+    queryFn: () => companyAnalytics(db, companyId!, range),
+    enabled: !!companyId,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useTransactionLinks(transactionId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'transaction-links', transactionId], queryFn: () => transactionLinks(db, transactionId!), enabled: !!transactionId });
 }
 
 /** Runs a write against the DB and refreshes every ledger-derived query on success. */

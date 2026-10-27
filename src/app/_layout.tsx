@@ -105,6 +105,19 @@ export default function RootLayout() {
                 <Stack.Screen name="categories/edit" options={{ ...modal, title: 'Category' }} />
                 <Stack.Screen name="tags" options={{ title: 'Tags' }} />
                 <Stack.Screen name="trends" options={{ title: 'Balance trends' }} />
+                <Stack.Screen name="company/[id]/index" options={{ title: 'Company' }} />
+                <Stack.Screen name="company/[id]/tax" options={{ title: 'Tax estimate' }} />
+                <Stack.Screen name="company/[id]/obligations" options={{ title: 'Obligations & reserves' }} />
+                <Stack.Screen name="company/[id]/simulate" options={{ title: 'Distribution simulator' }} />
+                <Stack.Screen name="company/[id]/distributions" options={{ title: 'Distributions' }} />
+                <Stack.Screen name="company/[id]/analytics" options={{ title: 'Company analytics' }} />
+                <Stack.Screen name="company/obligation/[id]" options={{ title: 'Obligation' }} />
+                <Stack.Screen name="company/distribution/[id]" options={{ title: 'Distribution' }} />
+                <Stack.Screen name="company/assumptions" options={{ ...modal, title: 'Assumptions' }} />
+                <Stack.Screen name="company/fiscal-year" options={{ ...modal, title: 'Fiscal year' }} />
+                <Stack.Screen name="company/obligation-edit" options={{ ...modal, title: 'Obligation' }} />
+                <Stack.Screen name="company/reserve-edit" options={{ ...modal, title: 'Reserve' }} />
+                <Stack.Screen name="company/approve" options={{ ...modal, title: 'Record approval' }} />
               </Stack>
             </QueryClientProvider>
           </SQLiteProvider>

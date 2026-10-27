@@ -726,7 +726,7 @@ export function dataStatus(input: {
   const late = input.accounts.filter((x) => x.openingDate > fy.startDate && x.openingDate <= fy.endDate);
   if (late.length > 0 && !preTracking) {
     reasons.push(
-      `${late.map((x) => `${x.name} starts on ${formatDateLabel(x.openingDate, today)}`).join(', ')}: earlier activity is only in the opening balance. Enter the revenue and expenses before tracking in the assumptions.`,
+      `${late.map((x) => `${x.name} starts ${x.openingDate === today ? 'today' : `on ${formatDateLabel(x.openingDate, today)}`}`).join(', ')}: earlier activity is only in the opening balance. Enter the revenue and expenses before tracking in the assumptions.`,
     );
   }
   if (company.tvaMode === 'ttc') {
