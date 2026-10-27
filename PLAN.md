@@ -39,7 +39,8 @@ src/
                        catalog (categories/merchants/products/tags), goals, budgets, analytics, insights,
                        company (fiscal years, assumptions, reserves, P&L, tax estimate), obligations,
                        distributions, overview (SARL dashboard + three totals), company-analytics,
-                       backup (snapshot, manifest, verify, restore, divergence, retention), drive-api, export
+                       backup (snapshot, manifest, verify, restore, divergence, retention), drive-api, export,
+                       recurring (bills, expected payments, reservations), debts (debts and receivables)
   hooks/               TanStack Query hooks wrapping services (backup.ts: Google account + backup actions)
   lib/                 platform glue: confirm, files (+ .web), google-auth (+ .web), backup-engine (expo-sqlite), hash
   ui/                  design system: theme tokens, Text, Card, Button, Chip, inputs, Icon, FAB
@@ -99,10 +100,12 @@ Rules enforced in `services/ledger.ts`:
 | Savings | Σ `savings` accounts |
 | Other liquid | Σ `prepaid`, `ewallet`, `other` |
 | Liquid assets | Bank + Cash + Savings + Other liquid |
-| Reserved | goal reservations backed by real balances (bills: Phase 5) |
+| Reserved | goals + bills, both backed by real balances (part of Liquid assets, never extra) |
 | Available | Liquid assets − Reserved ("unallocated") |
-| Liabilities | Σ owed on `credit_card` accounts (+ debts in Phase 5) |
+| Liabilities | Σ owed on `credit_card` accounts + outstanding debts I owe |
 | Net liquid position | Liquid assets − Liabilities |
+| Receivables | money owed to me; shown apart, never in any total above |
+| Expected income | pending expected income in the next 30 days; a projection, never added |
 
 A negative balance on a non-credit account (an overdraft) stays in its group as a negative number and is not hidden.
 
@@ -170,9 +173,30 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 - **Change triggers**: `AFTER INSERT/UPDATE/DELETE` on every user-data table bump `sync_meta.change_seq`. `settings` (UI preferences), `sync_meta` and `backups` are not tracked (`UNTRACKED_TABLES`). **Any later migration that creates a table must run `changeTriggersSql(table)`**; a test fails otherwise.
 - Planned `sync_meta(device_id, last_backup_at)` grew the baseline, restore and recovery fields: they are what divergence detection and "undo restore" need.
 
+### v5 — Phase 5 (implemented)
+
+- `transactions` is **rebuilt** so its kind CHECK allows `debt` (loan principal moving in or out of a personal location). SQLite cannot change a CHECK in place: the migration copies every row in rowid order into an identical table, drops the old one, renames, and recreates its indexes and change triggers from their stored SQL. Foreign keys are switched off around that migration only (`rebuildsTables`, so the drop cannot cascade to postings) and `foreign_key_check` must be empty before it commits.
+- `debts(id, direction ∈ owe|owed, counterparty, principal_minor, currency, start_date, due_date, origin_transaction_id UNIQUE → transactions, notes, closed_at, close_note)`.
+- `debt_payments(id, debt_id → CASCADE, transaction_id UNIQUE, amount_minor)`: a transaction repays at most one debt.
+- `recurring_rules(id, name, direction ∈ expense|income, amount_minor, account_id, category_id, payee, debt_id → SET NULL, interval_unit ∈ day|week|month|year, interval_count, start_date (first due date), end_date, remind_days_before, reserve, is_paused, notes)`.
+- `expected_payments(id, rule_id → CASCADE, due_date, name/direction/account_id/category_id/amount_minor/reserve for one-offs, status ∈ pending|paid|skipped, transaction_id UNIQUE, resolved_at, notes)`, UNIQUE(rule_id, due_date), CHECK paid ⇔ transaction. Only resolved or adjusted occurrences of a rule are stored; the rest are computed from the schedule.
+- `companies` gains `payout_mode ∈ detailed|simple` (default `detailed`) and `simple_payout_bp`.
+- One system category: "Loan interest" (`sys-cat-loan-interest`, in `DEBT_CATEGORIES`).
+- Change triggers on the four new tables.
+
 ### Later migrations (planned)
 
-- **v5 (Phase 5)**: `recurring_rules`, `expected_payments`, `debts(direction ∈ owe|owed, counterparty, principal, due)`, `debt_payments`, `attachments(transaction_id, uri, mime, sha256)` (attachment files must then be added to backups)
+- **v6**: `attachments(transaction_id, uri, mime, sha256)` (attachment files must then be added to backups)
+
+## Recurring payments and debts (Phase 5) rules
+
+- **Expected money is never money.** Rules and expected payments never touch a balance. Only a real transaction moves money: "Mark paid" records it (expense, income, or loan repayment) and links it atomically, or an existing transaction is linked. A transaction settles at most one expected payment; deleting it re-opens the payment.
+- **Schedules** are computed from the first due date (never from the previous one): a bill on the 31st stays on the last day of short months. Changing a rule keeps paid/skipped history and drops adjustments that are no longer on the schedule. Paused rules have nothing pending.
+- **Bills reservation**: pending bills (reserve on) that are overdue or due within 30 days are reserved on the location they are paid from, **after** goal reservations and never beyond what the location holds; a shortfall is reported. Credit cards hold no money, so nothing is reserved on them. `liquid = goals + bills + unallocated`. Paying a bill at its expected amount leaves "available" unchanged.
+- **Expected income** (next 30 days) is shown as a projection and never added to any figure.
+- **Debts are personal and never money.** Borrowing/lending moves principal in a `debt` transaction: the balance changes, it is never income or expense (every income/expense query lists its kinds, so `debt` is excluded by construction). Repayments are `debt` transactions linked to the debt; interest is a separate linked "Loan interest" expense. An existing expense or income can also be linked as a repayment (someone paid for me, I repay them: the repayment is the real expense). Outstanding = principal − linked repayments (a link never counts for more than its transaction). Editing a debt rewrites its starting movement, so balance and debt agree.
+- **Debts in My Money**: debts I owe join card debt in liabilities (net liquid: borrowing changes nothing, interest lowers it); money owed to me is a receivable, shown apart and never counted as cash. Closed debts stop counting from their close date. Past dates use what was outstanding then.
+- **Loan installments**: a recurring rule linked to a debt records a loan repayment (plus interest) when marked paid.
 
 ## Company module (Phase 3) rules
 
@@ -186,6 +210,7 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 - **Distributions**: simulated (stored apart, no effect) → approved (a company obligation: your net share, plus withholding and other partners' shares as linked obligations; still not your money) → paid by a linked company → personal transfer classed `dividend`, which is the only thing that adds to A and to personal income. Paying above the approved net throws `OverDistributionError` unless explicitly confirmed. Warnings: dividend transfers with no approval, approvals not paid, over-payment, and linked transfers whose class changed.
 - **Three totals**: A = personal liquid money; B = per company, liquidity after obligations (with cash, obligations and reserves shown); C = approved-unpaid net + an estimate from the current year's undistributed profit, capped by cash after obligations and unrecorded IS, × ownership − withholding. They are separate figures; no A + B + C exists anywhere. Scenarios ("if the approved distribution is paid") show A rising by exactly what company cash loses.
 - Simulator and payout output is labelled **"Estimated potential personal payout — not yet personal money."**
+- **Simple payout mode** (Phase 5, per company, opt-in): when the accountant figures are not available, C = an entered net share (e.g. 28 %) of current company money (cash + bank). No fiscal year, tax or obligation is used. Approved dividends not yet paid come out of that same money, so they are part of the share, never added on top. It stays an estimate in C and is never added to A. The detailed mode stays the default and its settings are kept.
 
 ## Backup (Phase 4) rules
 
@@ -214,4 +239,4 @@ This is snapshot **backup/restore, not sync**, and the UI says so: nothing is me
 2. Analytics, catalog and price history, tags, budgets, goals and allocations, historical balances, insights ✅
 3. SARL dashboard, obligations, tax estimates, distribution simulator ✅
 4. Google Sign-In, Drive backup/restore, CSV/JSON export ✅ (device check pending)
-5. Recurring bills, debts, attachments, notifications, OCR evaluation, polish ← **next**
+5. Recurring bills, debts, simple company estimate, faster expense entry ✅ (part 1); attachments, notifications, automatic backup, OCR evaluation, polish ← **in progress**

@@ -8,7 +8,7 @@ Last updated: 2026-10-27
 | 2 — Analytics & savings | ✅ Done (branch `phase-2`, see below) |
 | 3 — Company money | ✅ Done (branch `phase-3`, see below) |
 | 4 — Google Sign-In & Drive backup | ✅ Done (branch `phase-4`); Android device check pending, see the checklist below |
-| 5 — Recurring, debts, attachments, polish | ⏳ Next |
+| 5 — Recurring, debts, attachments, polish | 🔶 Part 1 done (branch `phase-5`): recurring bills, expected income, debts & receivables, simple company estimate, faster expense entry, app icon. Next: Android check, attachments, notifications |
 
 ## Phase 1 — delivered
 
@@ -82,6 +82,42 @@ Last updated: 2026-10-27
   - Icon-only chips had no accessible name.
   - Per-location trends plotted "0 DH" before the opening date.
 - **Still not verified on a physical Android device.**
+
+## Phase 5 — part 1 delivered
+
+**Data (migration v5, see [PLAN.md](PLAN.md#v5--phase-5-implemented))**
+- `transactions` rebuilt so its kind CHECK allows `debt` (loan principal). The migration copies every row in order, recreates indexes and change triggers from their stored SQL, runs with foreign keys off (so the drop cannot cascade to postings) and refuses to commit unless `foreign_key_check` is empty. Migrations can now declare `rebuildsTables`.
+- New tables with change triggers: `debts`, `debt_payments`, `recurring_rules`, `expected_payments`. `companies` gains `payout_mode` and `simple_payout_bp`. New system category "Loan interest".
+
+**Services**
+- [recurring.ts](src/services/recurring.ts): rules (monthly, quarterly, yearly, custom every N days/weeks/months/years, end date, reminder window, pause), one-off expected payments, occurrences computed from the schedule (only paid/skipped/adjusted ones are stored), pay (records the expense, income or loan repayment and links it atomically), link an existing transaction, skip, reopen, adjust one date's amount, link candidates, bill reservations per location, expected income. Schedule maths in [domain/schedule.ts](src/domain/schedule.ts).
+- [debts.ts](src/services/debts.ts): debts I owe and money owed to me, with or without a starting money movement, repayments (principal + optional interest), link an existing expense/income/repayment, unlink, close/reopen, outstanding as of any date.
+- [ledger.ts](src/services/ledger.ts): `saveDebtMovement` (principal in/out on a personal non-card location; interest as a linked "Loan interest" expense). Deleting a transaction also re-opens the debt or bill it paid.
+- [balances.ts](src/services/balances.ts): My Money adds reserved for bills (after goals, capped by the balance, shortfall reported), debt liabilities, receivables (apart), expected income (projection). `reserved` is now goals + bills; `reservedGoals`/`reservedBills` split it.
+- [overview.ts](src/services/overview.ts): simple payout mode (an entered net share of company money; approved-unpaid dividends inside it, never added twice).
+- [export.ts](src/services/export.ts): loan principal in/out as its own totals (never income, spending or transfers); JSON lists debts with repayments and recurring payments.
+- [queries.ts](src/services/queries.ts): merchant suggestions carry where and how much was paid there last time.
+
+**App**
+- **Bills & expected** (My Money → Bills, Settings): reserved total, shortfall and overdue banners, bills due in 30 days, expected income, recurring list; rule detail (overdue, coming up, history, pause); form for recurring or one-off payments (bill / expected income, location, category or debt, payee, frequency presets or custom, next due date, end date, reminder, reserve); occurrence screen (record paid/received with actual amount and date, interest for installments, link a recorded transaction, adjust this date, skip, undo).
+- **Debts & money owed** (My Money → Debts, Settings): I owe / owed to me totals, lists, settled; form (direction, person, amount, "I received / gave this money" with location, dates, notes); detail (outstanding, repayments with unlink, record a repayment with interest, link a recorded transaction, close/reopen, plan installments).
+- My Money tiles: liabilities split cards/debts, owed to me, reserved for goals, reserved for bills, expected income; the total = goals + bills + unallocated line. Home: "Bills needing attention" (overdue and inside the reminder window) or "Coming up". Goals tab uses the goals-only reservation. Activity: "Loans" filter; loan movements show as "loan, not income or spending"; transaction detail links to its debt or bill and shows interest.
+- **Company → simple estimate** (Settings → company): "Detailed (accounting)" or "Simple (a % of company money)" with your net share; dashboard figure 7 and the C card explain the calculation.
+- **Expense entry**: Where → Paid from → Category → Date → Tags (always visible) → items/note. "Recent" places before typing, matches while typing; picking one fills its category, the location last used there (unless chosen by hand) and offers "Same as last time: X". Categories: most-used first, then "All categories" with search (accent-insensitive) and groups (your parent categories, then display-only themes for the built-in ones). Company categories only appear for company locations (also on income). Income uses the same order and history.
+- New app icon (wallet and coin on the app green) for Android adaptive (foreground, background, monochrome), the store icon, splash and favicon. The iOS icon now uses the same image.
+
+**Verification (2026-10-27)**
+- `npm test`: 211 tests in 17 suites (176 before + 35 new). New coverage:
+  - Schedules: month-end, 29 February, quarterly, weekly, daily, end dates; scanning from a late date equals a full scan.
+  - Bills: expected payments never change a balance; reserved within 30 days only; paying at the expected amount leaves available unchanged; paid once; deleting the payment re-opens it; reserved after goals and capped (shortfall); overdue, skip, reopen; link one transaction to one bill only; schedule change keeps history; pause; credit-card bills not reserved; personal only; category kind; location in use cannot be deleted; one-offs.
+  - Expected income: never in liquid/available/income until received.
+  - Loan installments: repayment + interest, net position falls by the interest only; debt direction and currency must match.
+  - Debts: borrowing leaves net position, income and spending unchanged; repayments with interest; over-repayment refused; closed debts; "they paid for me" repaid by an expense counts the purchase once; one debt per transaction; the starting movement cannot repay; editing rewrites the movement; deleting the movement or the debt; personal only; receivables never counted as cash; history as of a date; export totals.
+  - Simple payout: 28 % of company money without any fiscal-year data; an approved dividend is inside the share; paying it lowers the share; personal money unchanged; switching back keeps the setting.
+  - v4 → v5 migration on a populated database: every row identical and in order (incl. a soft-deleted transaction and a fee), indexes and triggers identical, foreign keys intact and enforced, one change-counter bump (the new category). A v3 backup restores through v4 and v5.
+  - Merchant suggestions (recent, matching, last location and amount); company categories only for company locations.
+- `npx tsc --noEmit`, `npx eslint src`: clean. `npx expo-doctor`: 20/20. `npx expo export --platform android`: builds.
+- Web smoke test (Chrome, 412 px, fresh database): created a monthly internet bill (300 DH reserved), paid it (balance 9,700), borrowed 5,000 from Brother into CIH (liabilities 5,000, net unchanged), repaid 1,000 + 50 interest (13,650; 4,000 outstanding; spending today 350, loans excluded), My Money net after debts 9,650, company simple mode at 28 % of 100,000 → C 28,000; expense form order, recent places, "same as last time", category search and groups. No console errors. Fixed during the test: loan interest missing on the repayment detail and "transfer fee" wording on delete, "on Today" wording, bill payments with no category showing as "Expense".
 
 ## Phase 4 — delivered
 
@@ -187,6 +223,17 @@ Build: `npx eas-cli@latest build --profile development --platform android` (or `
 - Bugs found and fixed during the smoke test: the distribution screen still offered "Pay 0 DH" once fully paid; "starts on Today" wording; figure 7 repeated all the data-status reasons. Approvals now also keep the simulation they came from.
 - **Still not verified on a physical Android device.**
 
+## Decisions (Phase 5)
+
+- **A new transaction kind for loan principal** instead of excluded categories: every income/expense query already lists its kinds, so `debt` is left out everywhere by construction (fail-safe). The price is a one-time rebuild of `transactions` in v5, done now while there is no data on a phone.
+- **Debts are personal.** Company loans stay company obligations or classified company ↔ personal transfers.
+- **Occurrences are computed, not generated**: no background job, editing a rule changes its future dates, only resolved/adjusted dates are stored (UNIQUE per rule and date).
+- **Bills are reserved after goals**, because goals are reserved explicitly; a location that cannot cover its bills is flagged rather than silently taking money from goals. Horizon 30 days (not configurable yet).
+- **Payments are linked one-to-one** (a transaction settles one bill and repays one debt). A loan installment can be both: the bill is a schedule marker, the debt holds the money meaning, so nothing is counted twice.
+- **Simple payout mode** is a per-company opt-in: the share is taken as net and final; approved-unpaid dividends are inside it (C = max(share, approved unpaid)).
+- **Category groups for built-in categories are display-only themes**, so reports and existing data do not change; real parent categories still take precedence.
+- **App icon** drawn as SVG and rasterised (no design files were provided); it can be replaced by dropping new PNGs in `assets/images/`.
+
 ## Decisions (Phase 4)
 
 - **Restore swaps the data with SQLite's online backup API, not by moving files.** The staged copy is verified and migrated in memory, then copied into the open connection in one SQLite transaction (`backupDatabaseAsync`, `sqlite3_backup_step(-1)`). Closing the connection and moving files next to a WAL file risks applying a stale `-wal` to the new database, and a crash between two moves could leave no database; `SQLiteProvider` also closes its connection without letting the app await it. After the swap the same connection runs migrations and `quick_check`, every query is refreshed, and row counts are compared with the copy (mismatch → the recovery copy is put back).
@@ -246,13 +293,11 @@ Build: `npx eas-cli@latest build --profile development --platform android` (or `
 - On web, `CI=1 expo start` does not watch files (restart after edits). Fast full-page reloads can hit expo-sqlite's OPFS lock ("createSyncAccessHandle"); a second reload fixes it. Neither affects Android.
 - The custom date range uses the native date picker on Android, and a YYYY-MM-DD text field on web.
 - No allocation history: goal progress over time and historical reservations are not shown.
-- No "bills" reservations yet (Phase 5 recurring payments). "Unallocated" therefore means "not reserved for goals".
 - Insights are computed on demand (no notifications). Budget threshold warnings appear on Home/Analytics only.
 - Products have no category/unit editor yet (the default unit is taken from the first purchase).
 - Day totals in Activity only add up MAD expenses (unchanged from Phase 1).
 - Company money: no accrual accounting (invoices, receivables, depreciation); the P&L is cash basis. No per-transaction TVA split; TVA is entered per year. No IS bracket tables (one rate, minimum or amount). No company balance-sheet items (capital, assets, owner current-account balance) beyond cash, obligations and reserves.
 - The payout estimate (C) uses only the latest fiscal year that has started; profit of earlier years must be entered as retained earnings on that year.
-- Company categories appear in the personal expense/income pickers too (under "More"); the entry screens do not yet filter categories by the chosen location's ownership.
 - On web, the date fields in the fiscal-year form keep their typed text when another field changes them (the end date does not follow a new start date). Native pickers are unaffected.
 - Text inputs have no accessible name beyond their placeholder (pre-existing in `TextField`).
 - Backup is manual: there is no scheduled or automatic backup, and no reminder yet when changes are not backed up (Phase 5 notifications).
@@ -262,14 +307,18 @@ Build: `npx eas-cli@latest build --profile development --platform android` (or `
 - Backup history lists the signed-in Google account's backups only; switching accounts shows the other account's folder. Local records of uploads to other accounts are kept but not shown.
 - The OAuth consent screen is in "Testing": Google may ask to sign in again every 7 days until it is published (`drive.appdata` is non-sensitive).
 - No progress bar for upload/download (databases are small; the screen shows "Working…").
-- Attachments are not backed up yet: there are none until Phase 5, which must add them to backups.
+- Attachments are not backed up yet: there are none until Phase 5 part 2, which must add them to backups.
+- Bill reminders are in-app only (Home and Bills); phone notifications come with the notification work. The reservation horizon is fixed at 30 days.
+- Bills cannot be settled by a transfer (for example paying a credit card); link an expense or a loan repayment instead.
+- Debts have no interest schedule or amortisation table; interest is entered with each repayment. Forgiving a debt is not recorded as income or expense.
+- The simple company estimate uses all company money and ignores obligations by design; switch back to the detailed mode for an accounting-based figure.
 
 ## Next (Phase 5 — finishing and extras)
 
-1. Run the Phase 4 Android checklist on the S22 (EAS development or preview build), fix what it finds, then publish the OAuth consent screen.
-2. Recurring bills and expected payments (and "bills" reservations in My Money), debts and receivables (migration v5, with change triggers on the new tables).
-3. Receipt attachments, included in backups (snapshot + files, with their SHA-256 in the manifest).
+1. Run the Phase 4 Android checklist on the S22 with the preview build, plus the Phase 5 screens (bills, debts, expense entry, icon), fix what it finds, then publish the OAuth consent screen.
+2. ✅ Recurring bills and expected payments (and "bills" reservations in My Money), debts and receivables (migration v5).
+3. Receipt attachments (migration v6), included in backups (snapshot + files, with their SHA-256 in the manifest).
 4. Notifications: budget thresholds, obligations due, "not backed up for N days" reminder.
 5. Optional automatic backup (e.g. after N changes or daily on Wi-Fi), still never overwriting other devices' backups.
-6. Carried over: allocation history for goal charts; filtering entry-screen categories by ownership; moving Phase 1–2 confirmations to `lib/confirm.ts`; accessible names for text inputs.
+6. Carried over: allocation history for goal charts; ✅ filtering entry-screen categories by ownership; moving Phase 1–2 confirmations to `lib/confirm.ts`; accessible names for text inputs.
 7. Performance testing with a few years of data (balances, analytics, snapshot/restore time), security review, UI polish, optional OCR evaluation.
