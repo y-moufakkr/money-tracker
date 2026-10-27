@@ -5,8 +5,8 @@ Last updated: 2026-10-27
 | Phase | Status |
 |---|---|
 | 1 — Core financial tracking | ✅ Done (see verification below) |
-| 2 — Analytics & savings | ⏳ Next |
-| 3 — Company money | Not started (separation groundwork done in Phase 1) |
+| 2 — Analytics & savings | ✅ Done (branch `phase-2`, see below) |
+| 3 — Company money | ⏳ Next (separation groundwork done in Phase 1) |
 | 4 — Google Sign-In & Drive backup | Not started |
 | 5 — Recurring, debts, attachments, polish | Not started |
 
@@ -41,21 +41,78 @@ Last updated: 2026-10-27
 - Manual run in the web build (real expo-sqlite/WASM), following the brief's example: 5 locations → personal 40,800 DH, company 100,000 DH separate; a 100 DH Moul Lkhodra expense with items lowers Wallet to 700 DH; an 8,000 DH company → personal salary counts as income; a wallet check at 650 DH records a −50 DH adjustment. Breakdown 49/37/12/2 % matches the brief.
 - **Not yet verified on a physical Android device.** No JDK or adb on this Mac — see README.
 
-## Known gaps / decisions
+## Phase 2 — delivered
 
-- Goals tab shows savings accounts and explains Phase 2; it has no goal creation yet. `reserved` is 0 until goal allocations exist.
-- Category management (create/rename/merge), tags and a merchant/product catalog UI are Phase 2. The data is already captured.
-- Phase 1 analytics are personal-only. Company P&L comes in Phase 3.
-- Drill-down from "Uncategorised" opens all transactions for the period (no "no category" filter yet).
-- Day totals in Activity only add up MAD expenses.
-- Debit cards are offered for bank, savings and mobile wallet accounts. Prepaid/credit "instruments" aren't needed because those are their own locations.
-- Release builds are signed with the debug key until a real keystore is created (needed before Phase 4).
+**Data (migration v2, see [PLAN.md](PLAN.md#v2--phase-2-implemented))**
+- New tables: tags, transaction/item tags, budgets + budget lines, savings goals, goal allocations. Migration v1 is unchanged. The upgrade is tested on a v1 database that already holds accounts, items and transfers: every row, balance and period summary is identical afterwards.
 
-## Next (Phase 2)
+**Services** (all writes in `db.transaction`, every rule tested)
+- [catalog.ts](src/services/catalog.ts): categories with one level of subcategories, rename, essential/discretionary flag (subcategories inherit), archive (cascades to subcategories), and merge. Merge re-points transactions, item lines, merchant/product defaults, subcategories and budget lines; budget lines for both categories are added together. Merchant, product and tag rename and merge never lose history. System categories cannot be archived or merged away.
+- [goals.ts](src/services/goals.ts) + [balances.ts](src/services/balances.ts): goals, allocations, and `OverAllocationError` with explicit consent. Goal progress only counts money the account actually holds; a shortfall is split pro rata. `moneySummary` now reports `reserved`, `available` (unallocated) and `overAllocated`. Historical summaries include since-archived locations (this fixes a Phase 1 inaccuracy) and report no reservations. `balanceHistory(dates)` reuses the same calculation.
+- [budgets.ts](src/services/budgets.ts): weekly, monthly or custom periods; overall limit and/or category lines; thresholds; budget vs actual, remaining, % used, days left, linear projection, "everything else".
+- [analytics.ts](src/services/analytics.ts): expense facts plus pure breakdowns by category, subcategory, tag, merchant, product, location and essential. Overlapping tags never double count. Product price history uses unit normalisation ([units.ts](src/domain/units.ts)), with merchant comparison and purchase frequency. Also merchant stats: total, monthly, visits, average ticket.
+- [insights.ts](src/services/insights.ts): rule-based insights (top categories, changes vs the same days last month, daily average, essential share, quantity bought, cheapest price, budget warnings, goals behind plan). Each one carries its calculation and a drill-down.
+- `listTransactions` gained filters for uncategorised, subcategories, tag/untagged, product, merchant/none and essential class. This closes the Phase 1 "Uncategorised" drill-down gap.
 
-1. Migration v2: tags, transaction/item tags, budgets, savings goals, goal allocations.
-2. Category management (hierarchy, rename, merge, archive), merchant/product rename & merge.
-3. Product catalog & price history (normalised unit prices, merchant comparison).
-4. Budgets with threshold warnings, goals with allocations capped by real balances.
-5. Balance trend charts (daily/weekly/monthly/yearly) using `accountBalances(asOf)`.
-6. Rule-based insights with explained calculations.
+**Screens**
+- Analytics: presets + custom date range; spending averages (calendar day, active day, week, month); insights; budgets; breakdown by every dimension. Each row opens its exact transactions, or "Analyse only this" filters the whole breakdown. Also essential vs discretionary, a personal-money trend (daily/weekly/monthly/yearly), and Explore links.
+- Goals tab: reserved / personal / unallocated, goals with progress and the monthly amount needed. Goal detail lets you reserve, change or release money per account, with a live "available" figure and confirmation before over-allocating.
+- My Money: reserved and unallocated figures, an over-allocation warning, plus Trends and Goals shortcuts. Location detail shows reservations per goal and a Trend button.
+- Home: reserved/unallocated, the first budget (spending vs remaining), the top 3 insights, and top-spending bars that now open their transactions.
+- New: Budgets (list + editor), Products (list + detail with per-unit price chart and merchant comparison), Merchants (list + detail with monthly columns), Categories (hierarchy, essential, icon/colour, archive, merge), Tags, Balance trends (personal, net, or any location, with a value table).
+- Expense entry: multi-select tags with inline creation; per-item tags. Transaction detail shows tags and links items to their product.
+- Charts: [charts.tsx](src/components/charts.tsx) — SVG line chart with tap-to-inspect, plus View-based columns and threshold meters. No chart library.
+
+**Verification (2026-10-27)**
+- `npm test`: 114 tests in 9 suites (68 from Phase 1 + 46 new). New coverage:
+  - Goals and allocations: no double counting; re-allocation replaces; over-allocation refused without consent and capped with it; pro-rata shortfall; overdraft backs nothing; release on archive/delete; historical views; foreign currency without a rate; plan maths.
+  - Tags and breakdowns: tag overlap (whole-transaction vs item tags, capping, untagged); subcategory rollup; uncategorised drill-down; essential inheritance; merchant/account/product breakdowns; business spending excluded.
+  - Products and budgets: unit normalisation (kg/g, L/cl/ml, dozen) and incompatible units kept apart; weighted merchant averages; budget maths (projection, days left, non-overlapping lines, thresholds); changing or deleting a budget leaves transactions byte-identical.
+  - Catalog and migration: category merge keeping history; merchant/product/tag merges; v1→v2 migration on a populated database.
+- `npx tsc --noEmit`, `npx eslint src`: clean. `npx expo-doctor`: 20/20. `npx expo export --platform android`: Hermes bundle builds.
+- Web smoke test (Chrome, 412 px mobile viewport, real expo-sqlite/WASM, fresh database). Accounts: Savings 15,000 and Wallet 800. Expenses: one 158 DH expense tagged #Gym diet with chicken 2 kg = 124 DH and 500 g = 34 DH, plus a 60 DH uncategorised one.
+  - Analytics: 218 DH, 8.07 DH/day; chicken 2.5 kg, average 63.20 DH/kg, cheapest 62 DH/kg; tag breakdown 158 + untagged 60; the Uncategorised drill-down lists exactly the 60 DH expense.
+  - Goals: Emergency fund 20,000 by Oct 2027. Reserving 16,000 was refused; 10,000 was accepted. My Money then shows 15,582 = 10,000 reserved + 5,582 unallocated.
+  - Budget 250 DH with Meat & Fish 150: 87 % used, past the 75 % warning, projected 250.30 DH, Meat & Fish 8 DH over, "everything else" 60/100.
+  - Also checked: merchant rename, subcategory creation (inherited "Essential"), and daily trends for Wallet (800 → 582).
+- Bugs found and fixed during the smoke test:
+  - React Compiler hoisted `category!.id` out of a mutation callback, so the "new category" form crashed. Ids are now passed in mutation inputs and closures capture null-safe locals, in the category, goal and budget forms.
+  - The per-merchant price average was a plain mean; it is now weighted like the overall average.
+  - The price chart was forced to a zero baseline.
+  - Icon-only chips had no accessible name.
+  - Per-location trends plotted "0 DH" before the opening date.
+- **Still not verified on a physical Android device.**
+
+## Decisions (Phase 2)
+
+- **No `category_groups` table.** Parent categories are the groups (one level of subcategories). This keeps rollups unambiguous and avoids a second grouping that could double count.
+- **Budget periods** are weekly (Mon–Sun), monthly (calendar month) or custom dates. The "total" limit is the budget's own `amount_minor`; leaving it empty uses the sum of the category lines. Budgets apply to personal spending in MAD (foreign currencies converted as in the period summary).
+- **Budget lines never overlap.** A line covers its category plus those subcategories that have no line of their own.
+- **Allocation semantics.** The value set is the reserved total for that goal in that account, not a top-up. Only personal, non-credit, non-archived locations can be reserved. Goals are in MAD; allocations are in the account's currency and converted for progress, and are excluded when no rate exists.
+- **Over-allocation** is possible only after explicit consent. Even then, totals and progress count only what the account holds; the rest is shown as "not covered". Lowering an allocation never needs consent.
+- **Reservations are not historical.** There is no allocation history yet, so past My Money views and trend points show no reservations instead of guessing.
+- **Tag attribution.** A whole-transaction tag wins over item tags on the same transaction. Item-only tags count the tagged lines, capped at the amount paid.
+- **Product averages** are weighted (Σ amount ÷ Σ quantity). A plain mean is used only for a merchant whose lines carry a unit price but no quantity. Lines without a unit count towards spending, but no price per unit is shown for them.
+- **Insight thresholds.** A category change is reported only if it is at least 15 % and at least 100 DH on one side. Periods compare the same number of days at the start of last month.
+- **Analytics stay personal-only**, as in Phase 1. Merchant and product figures use personal expenses.
+- **Merges delete the source row** after re-pointing history. There are no tombstones; Phase 4 backup is snapshot-based, not sync.
+
+## Known gaps
+
+- **Not tested on Android hardware.** No JDK/adb on this Mac. On web, `Alert` dialogs (delete and over-allocation confirmations) are no-ops in react-native-web. The service still refuses over-allocation on web, but the "Reserve anyway" path can only be exercised on Android/iOS.
+- On web, `CI=1 expo start` does not watch files (restart after edits). Fast full-page reloads can hit expo-sqlite's OPFS lock ("createSyncAccessHandle"); a second reload fixes it. Neither affects Android.
+- The custom date range uses the native date picker on Android, and a YYYY-MM-DD text field on web.
+- No allocation history: goal progress over time and historical reservations are not shown.
+- No "bills" reservations yet (Phase 5 recurring payments). "Unallocated" therefore means "not reserved for goals".
+- Insights are computed on demand (no notifications). Budget threshold warnings appear on Home/Analytics only.
+- Products have no category/unit editor yet (the default unit is taken from the first purchase).
+- Day totals in Activity only add up MAD expenses (unchanged from Phase 1).
+- Release builds are still signed with the debug key (needed before Phase 4).
+
+## Next (Phase 3 — company money)
+
+1. Migration v3: company fiscal years, liabilities (IS, TVA, payroll, CNSS, suppliers), reserves, tax assumptions per fiscal year, distribution simulations and distributions (see PLAN.md).
+2. SARL dashboard: bank balance vs profit vs distributable profit vs approved vs received distribution, each a separate figure.
+3. Company P&L from business expenses/income (the analytics facts can be reused with `ownership = 'business'`).
+4. Tax estimates with user-entered, sourced rates per fiscal year; distribution simulator clearly labelled "not yet personal money"; three-totals overview that never sums A + B + C.
+5. Consider allocation history (dated reservation events) so goal progress can be charted over time.

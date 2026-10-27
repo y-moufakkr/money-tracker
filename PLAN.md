@@ -13,6 +13,7 @@ Guiding rule: **one dirham is never counted twice.** Every balance is derived fr
 | Storage | `expo-sqlite` 58, WAL mode, `PRAGMA foreign_keys = ON` | Runs in Expo Go for Phase 1–3 |
 | Server state | TanStack Query 5: every DB read is a query; every write invalidates the `['ledger']` key | |
 | UI state | Zustand 5 (small UI prefs) | |
+| Charts | `react-native-svg` (in Expo Go) for line charts; plain Views for bars, columns and meters | No chart library |
 | Icons | `expo-symbols` (Material Symbols font on Android) | `@expo/vector-icons` is no longer in the SDK |
 | Dates | `@react-native-community/datetimepicker` (native Android dialog) | |
 | IDs | `expo-crypto` `randomUUID()` | UUID v4 text keys everywhere |
@@ -30,7 +31,8 @@ src/
     transactions/[id]  transaction detail
   db/                  Db interface, expo adapter, migrations, seed data
   domain/              pure logic: money (minor units, parsing, formatting, FX), dates (Africa/Casablanca), types
-  services/            ledger (all writes), balances (all balance maths), queries (reads for lists/analytics)
+  services/            ledger (money writes), balances (all balance + reservation maths), queries (lists),
+                       catalog (categories/merchants/products/tags), goals, budgets, analytics, insights
   hooks/               TanStack Query hooks wrapping services
   ui/                  design system: theme tokens, Text, Card, Button, Chip, inputs, Icon, FAB
   test/                node:sqlite adapter for tests
@@ -89,8 +91,8 @@ Rules enforced in `services/ledger.ts`:
 | Savings | Σ `savings` accounts |
 | Other liquid | Σ `prepaid`, `ewallet`, `other` |
 | Liquid assets | Bank + Cash + Savings + Other liquid |
-| Reserved | goal and bill reservations (Phase 2; 0 until then) |
-| Available | Liquid assets − Reserved |
+| Reserved | goal reservations backed by real balances (bills: Phase 5) |
+| Available | Liquid assets − Reserved ("unallocated") |
 | Liabilities | Σ owed on `credit_card` accounts (+ debts in Phase 5) |
 | Net liquid position | Liquid assets − Liabilities |
 
@@ -117,9 +119,28 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 - `fx_rates(id, currency, rate_micros, as_of)`
 - Indexes: `postings(account_id)`, `postings(transaction_id)`, `transactions(date)`, `transactions(kind, date)`, `transactions(category_id)`, `transactions(merchant_id)`, `purchase_items(transaction_id)`, `purchase_items(product_id)`
 
+### v2 — Phase 2 (implemented)
+
+- `tags(id, name UNIQUE NOCASE, color, is_archived)`
+- `transaction_tags(transaction_id→transactions CASCADE, tag_id→tags CASCADE, PK both)` and `item_tags(item_id→purchase_items CASCADE, tag_id→tags CASCADE, PK both)`. A tag can be attached once per transaction/line.
+- `budgets(id, name, period ∈ weekly|monthly|custom, start_date, end_date, amount_minor NULL = sum of lines, currency, thresholds '75,90,100', is_archived)`, CHECK custom ⇒ both dates.
+- `budget_lines(id, budget_id→budgets CASCADE, category_id→categories, amount_minor > 0, UNIQUE(budget_id, category_id))`
+- `savings_goals(id, name, target_minor > 0, currency, target_date, monthly_plan_minor, icon, color, notes, sort_order)`
+- `goal_allocations(id, goal_id→savings_goals CASCADE, account_id→accounts, amount_minor > 0, UNIQUE(goal_id, account_id))`. The amount is in the account's currency and is the current reserved total (setting it replaces, never adds).
+- Indexes: `transaction_tags(tag_id)`, `item_tags(tag_id)`, `categories(parent_id)`, `budget_lines(budget_id)`, `goal_allocations(account_id)`
+- **Dropped from the plan:** `category_groups`. Parent categories (one level of subcategories) are the groups.
+
+### Phase 2 rules
+
+- **Allocations** reserve part of a real personal, non-credit account. They never move money and never add to totals. What an account backs is `min(Σ allocations, max(balance, 0))`. When it holds less than is allocated, the money it holds is split pro rata between its goals (largest remainder, exact). My Money: `liquid = reserved + unallocated`. Reserving more than the unallocated balance throws `OverAllocationError` unless the user explicitly confirms; lowering is always allowed. Archiving or deleting a location releases its allocations. Reservations exist only in the present: historical views report 0.
+- **Tags**: a tagged transaction contributes its whole paid amount to the tag. Otherwise its tagged item lines do (discounts subtract), capped at the amount paid. A transaction appears under each of its tags, but every total counts it once.
+- **Budgets**: actual = recorded personal expenses in the period (MAD). A category line covers the category and those of its subcategories that have no line of their own, so lines never overlap. "Everything else" = overall limit − Σ lines. Projection = spent ÷ days elapsed × days in period. Budgets never touch transactions.
+- **Products**: quantities and prices are compared only within one unit group (mass kg/g, volume L/cl/ml, count piece/dozen, or one incomparable unit such as "pack"). Average price = Σ amount ÷ Σ quantity of lines that have both. Nothing is converted by guessing.
+- **Analytics** load personal expenses once as "facts" (`services/analytics.ts`) and derive every breakdown with pure functions. Each breakdown row carries the `TransactionFilter` that lists exactly its transactions.
+- **Merges** (category, merchant, product, tag) re-point all history in one SQLite transaction, then remove the source. Item lines keep the name/unit they were recorded with. System categories cannot be archived or merged away.
+
 ### Later migrations (planned)
 
-- **v2 (Phase 2)**: `tags`, `transaction_tags`, `item_tags`, `category_groups`, `budgets`, `budget_lines`, `savings_goals`, `goal_allocations(goal_id, account_id, amount_minor)`. Allocations reserve part of a real account. They are capped by that account's balance (with an explicit warning) and never add to totals.
 - **v3 (Phase 3)**: `company_fiscal_years`, `company_liabilities(kind ∈ is|tva|payroll|supplier|cnss|other, amount, due, paid)`, `company_reserves`, `tax_assumptions(fiscal_year, key, value, source_note)`, `distribution_simulations`, `distributions(approved_at, gross, withholding, net, paid_transaction_id)`
 - **v4 (Phase 4)**: `backups(id, created_at, drive_file_id, schema_version, sha256, size, device)`, `sync_meta(device_id, last_backup_at)`
 - **v5 (Phase 5)**: `recurring_rules`, `expected_payments`, `debts(direction ∈ owe|owed, counterparty, principal, due)`, `debt_payments`, `attachments(transaction_id, uri, mime, sha256)`
@@ -139,8 +160,8 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 
 ## Phases
 
-1. Core ledger, accounts, cards, income/expense/transfer, reconciliation, fast entry, itemized purchases, history, My Money ← **current**
-2. Analytics, catalog and price history, tags, budgets, goals and allocations, historical balances, insights
-3. SARL dashboard, obligations, tax estimates, distribution simulator
+1. Core ledger, accounts, cards, income/expense/transfer, reconciliation, fast entry, itemized purchases, history, My Money ✅
+2. Analytics, catalog and price history, tags, budgets, goals and allocations, historical balances, insights ✅
+3. SARL dashboard, obligations, tax estimates, distribution simulator ← **next**
 4. Google Sign-In, Drive backup/restore, CSV/JSON export
 5. Recurring bills, debts, attachments, notifications, OCR evaluation, polish
