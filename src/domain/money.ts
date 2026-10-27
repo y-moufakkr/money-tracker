@@ -111,6 +111,18 @@ export function minorToInput(minor: number, currency = BASE_CURRENCY): string {
   return minor < 0 ? `-${text}` : text;
 }
 
+/**
+ * Machine-readable amount for exports: always the currency's decimals, "." separator, ASCII
+ * minus, no grouping or symbol. 12350 → "123.50", −5 → "-0.05", JPY 1200 → "1200".
+ */
+export function formatDecimal(minor: number, currency = BASE_CURRENCY): string {
+  const { decimals } = currencyInfo(currency);
+  const abs = Math.abs(minor);
+  const factor = 10 ** decimals;
+  const text = decimals > 0 ? `${Math.floor(abs / factor)}.${String(abs % factor).padStart(decimals, '0')}` : String(abs);
+  return minor < 0 ? `-${text}` : text;
+}
+
 /** Like parseAmount but accepts a leading minus sign. */
 export function parseSignedAmount(input: string, currency = BASE_CURRENCY): number | null {
   const trimmed = input.trim().replace(/^[−–]/, '-');

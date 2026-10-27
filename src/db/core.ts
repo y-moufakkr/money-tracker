@@ -33,23 +33,35 @@ export function createDb(driver: Driver): Db {
     exec: (sql) => driver.exec(sql),
     run: (sql, params = []) => driver.run(sql, params),
     transaction: (fn) => fn(inTx),
+    exclusive: (fn) => fn(inTx),
+  };
+
+  async function atomically<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
+    await driver.exec('BEGIN IMMEDIATE');
+    try {
+      const result = await fn(inTx);
+      await driver.exec('COMMIT');
+      return result;
+    } catch (e) {
+      await driver.exec('ROLLBACK').catch(() => undefined);
+      throw e;
+    }
+  }
+
+  /** Handed to `exclusive` callers: the queue is already held, transactions are still real. */
+  const held: Db = {
+    ...reads,
+    exec: (sql) => driver.exec(sql),
+    run: (sql, params = []) => driver.run(sql, params),
+    transaction: atomically,
+    exclusive: (fn) => fn(held),
   };
 
   return {
     ...reads,
     exec: (sql) => locked(() => driver.exec(sql)),
     run: (sql, params = []) => locked(() => driver.run(sql, params)),
-    transaction: (fn) =>
-      locked(async () => {
-        await driver.exec('BEGIN IMMEDIATE');
-        try {
-          const result = await fn(inTx);
-          await driver.exec('COMMIT');
-          return result;
-        } catch (e) {
-          await driver.exec('ROLLBACK').catch(() => undefined);
-          throw e;
-        }
-      }),
+    transaction: (fn) => locked(() => atomically(fn)),
+    exclusive: (fn) => locked(() => fn(held)),
   };
 }

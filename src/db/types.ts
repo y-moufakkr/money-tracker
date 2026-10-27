@@ -12,6 +12,11 @@ export interface Db {
   first<T>(sql: string, params?: BindParams): Promise<T | null>;
   /** Runs `fn` atomically. Nested calls reuse the outer transaction. */
   transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
+  /**
+   * Runs `fn` while holding the write queue, outside any transaction (checkpoint, VACUUM INTO,
+   * restore). `fn` must use the `Db` it receives: the outer one would wait for the queue it holds.
+   */
+  exclusive<T>(fn: (db: Db) => Promise<T>): Promise<T>;
 }
 
 export class LedgerError extends Error {

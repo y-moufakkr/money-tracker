@@ -9,10 +9,9 @@ function bind(params: BindParams): unknown[] {
   return [params];
 }
 
-/** In-memory database using Node's built-in SQLite, migrated to the latest schema (or to `version`). */
-export async function createTestDb(version?: number): Promise<Db> {
-  const raw = new DatabaseSync(':memory:');
-  const db = createDb({
+/** Wraps a node:sqlite connection in the app's `Db` interface. */
+export function wrapNodeDb(raw: DatabaseSync): Db {
+  return createDb({
     exec: async (sql) => {
       raw.exec(sql);
     },
@@ -27,6 +26,11 @@ export async function createTestDb(version?: number): Promise<Db> {
       return r ? ({ ...r } as T) : null;
     },
   });
+}
+
+/** In-memory database using Node's built-in SQLite, migrated to the latest schema (or to `version`). */
+export async function createTestDb(version?: number): Promise<Db> {
+  const db = wrapNodeDb(new DatabaseSync(':memory:'));
   await migrate(db, version);
   return db;
 }

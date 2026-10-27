@@ -6,8 +6,10 @@ import { fiscalYearBounds, saveFiscalYear } from '@/services/company';
 import { createGoal, setAllocation } from '@/services/goals';
 import { saveExpense, saveIncome, saveTransfer } from '@/services/ledger';
 import { saveLiability } from '@/services/obligations';
-import { companyDashboard } from '@/services/overview';
+import { backupStatus, getSyncMeta } from '@/services/backup';
+import { companyDashboard, threeTotals } from '@/services/overview';
 import { getTransaction, periodSummary } from '@/services/queries';
+import { dumpData, populate } from '@/test/fixtures';
 import { createTestDb } from '@/test/node-db';
 import { migrate, SCHEMA_VERSION } from './migrations';
 import { COMPANY_CATEGORIES } from './seed';
@@ -101,7 +103,7 @@ describe('migrations', () => {
     });
     const before = await snapshot();
 
-    expect(await migrate(db)).toBe(3);
+    expect(await migrate(db, 3)).toBe(3);
     expect(await version(db)).toBe(3);
 
     const after = await snapshot();
@@ -130,7 +132,41 @@ describe('migrations', () => {
     expect(dash!.checks.map((c) => c.id)).toContain('dividend-without-approval');
     expect((await moneySummary(db)).personal).toEqual(before.summary.personal);
 
-    expect(await migrate(db)).toBe(3);
+    expect(await migrate(db, 3)).toBe(3);
+  });
+
+  it('upgrades a v3 database with company obligations and distributions to v4 without changing it', async () => {
+    const db = await createTestDb(3);
+    const ids = await populate(db);
+    const snapshot = async () => ({
+      data: await dumpData(db),
+      balances: await accountBalances(db),
+      summary: await moneySummary(db),
+      personal: await periodSummary(db, { from: start, to: today }),
+      business: await periodSummary(db, { from: start, to: today }, 'business'),
+      dashboard: await companyDashboard(db, ids.companyId),
+      totals: await threeTotals(db),
+    });
+    const before = await snapshot();
+
+    expect(await migrate(db)).toBe(4);
+    expect(await version(db)).toBe(4);
+    expect(await snapshot()).toEqual(before);
+
+    // One device row with a stable id; the existing data counts as never backed up.
+    const meta = await getSyncMeta(db);
+    expect(meta.deviceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(meta).toMatchObject({ changeSeq: 0, baselineSeq: null, lastBackupAt: null, keepBackups: 10 });
+    expect((await backupStatus(db)).unbackedChanges).toBe(true);
+    expect(await db.all('SELECT * FROM backups')).toEqual([]);
+
+    // Writes on the upgraded data are tracked, including company records.
+    await saveLiability(db, { companyId: ids.companyId, kind: 'is', label: 'IS advance', amountMinor: 700_000 });
+    const after = await getSyncMeta(db);
+    expect(after.changeSeq).toBeGreaterThan(0);
+    expect(after.deviceId).toBe(meta.deviceId);
+    expect(await migrate(db)).toBe(4);
+    expect((await getSyncMeta(db)).deviceId).toBe(meta.deviceId);
   });
 
   it('refuses a database from a newer app version', async () => {

@@ -118,6 +118,19 @@ export function formatDateLabel(iso: string, today = todayISO()): string {
   return `${WEEKDAYS[d.getUTCDay()]} ${day} ${mon}`;
 }
 
+/** A UTC timestamp shown in Casablanca time: "Today 14:05", "Mon 27 Oct 14:05". */
+export function formatTimestamp(utc: string, today = todayISO()): string {
+  const at = new Date(utc);
+  if (Number.isNaN(at.getTime())) return utc;
+  let time = utc.slice(11, 16);
+  try {
+    time = new Intl.DateTimeFormat('en-GB', { timeZone: APP_TIME_ZONE, hour: '2-digit', minute: '2-digit', hour12: false }).format(at);
+  } catch {
+    // No tz data: keep UTC.
+  }
+  return `${formatDateLabel(todayISO(at), today)} ${time}`;
+}
+
 export function formatMonthLabel(iso: string): string {
   const d = toUTC(iso);
   return `${MONTHS_LONG[d.getUTCMonth()]} ${d.getUTCFullYear()}`;

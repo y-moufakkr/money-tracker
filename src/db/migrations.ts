@@ -5,6 +5,23 @@ type Migration = { version: number; name: string; up: (tx: Db) => Promise<void> 
 
 const now = () => new Date().toISOString();
 
+/**
+ * Tables that hold device-local metadata or UI preferences. Every other table is user data and
+ * must carry change triggers (see `changeTriggersSql`); a test checks this for every migration.
+ */
+export const UNTRACKED_TABLES = ['settings', 'sync_meta', 'backups'];
+
+/**
+ * Bumps `sync_meta.change_seq` on any write to `table`, so the app knows whether the data changed
+ * since the last backup. Any migration that creates a user-data table must run this for it.
+ */
+export function changeTriggersSql(table: string): string {
+  const bump = `UPDATE sync_meta SET change_seq = change_seq + 1, last_change_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1;`;
+  return ['INSERT', 'UPDATE', 'DELETE']
+    .map((op) => `CREATE TRIGGER trg_change_${table}_${op.toLowerCase()} AFTER ${op} ON ${table} BEGIN ${bump} END;`)
+    .join('\n');
+}
+
 const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -426,6 +443,68 @@ const MIGRATIONS: Migration[] = [
            VALUES (?, ?, ?, NULL, ?, ?, NULL, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories), 1, ?, ?)`,
           [c.id, c.name, c.kind, c.icon, c.color, ts, ts],
         );
+      }
+    },
+  },
+  {
+    version: 4,
+    name: 'backup: sync_meta, backups, change tracking',
+    up: async (tx) => {
+      await tx.exec(`
+        CREATE TABLE sync_meta (
+          id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+          device_id TEXT NOT NULL,
+          change_seq INTEGER NOT NULL DEFAULT 0,
+          last_change_at TEXT,
+          baseline_seq INTEGER,
+          baseline_backup_id TEXT,
+          baseline_created_at TEXT,
+          baseline_device_id TEXT,
+          baseline_sha256 TEXT,
+          last_backup_at TEXT,
+          last_restore_at TEXT,
+          last_restore_source TEXT,
+          recovery_at TEXT,
+          recovery_label TEXT,
+          recovery_sha256 TEXT,
+          recovery_size INTEGER,
+          keep_backups INTEGER NOT NULL DEFAULT 10 CHECK (keep_backups BETWEEN 1 AND 100),
+          account_email TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE backups (
+          id TEXT PRIMARY KEY NOT NULL,
+          created_at TEXT NOT NULL,
+          drive_file_id TEXT UNIQUE,
+          account_email TEXT,
+          schema_version INTEGER NOT NULL,
+          app_version TEXT,
+          sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+          size INTEGER NOT NULL CHECK (size > 0),
+          device_id TEXT NOT NULL,
+          device_name TEXT,
+          row_counts TEXT NOT NULL,
+          change_seq INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('verified','deleted')),
+          verified_at TEXT,
+          deleted_at TEXT
+        );
+
+        CREATE INDEX idx_backups_created ON backups(created_at);
+      `);
+      const ts = now();
+      await tx.run(
+        `INSERT INTO sync_meta (id, device_id, created_at, updated_at) VALUES (1, lower(hex(randomblob(16))), ?, ?)`,
+        [ts, ts],
+      );
+      const tables = await tx.all<{ name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+      );
+      for (const t of tables) {
+        if (UNTRACKED_TABLES.includes(t.name)) continue;
+        await tx.exec(changeTriggersSql(t.name));
       }
     },
   },
