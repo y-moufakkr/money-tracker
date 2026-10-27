@@ -1,56 +1,89 @@
-# Welcome to your Expo app 👋
+# Money Tracker
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+An offline-first personal and SARL finance app for Android, built with Expo SDK 58 and SQLite. It tracks where every dirham is, what you earn and spend, and keeps company money separate from personal money.
 
-## Get started
+- Architecture, ledger rules and schema: [PLAN.md](PLAN.md)
+- Status and remaining work: [PROGRESS.md](PROGRESS.md)
+- Original requirements: [project.md](project.md)
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **src/app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Commands
 
 ```bash
-npm run reset-project
+npm install          # install dependencies
+npm start            # start Metro (scan the QR code with Expo Go)
+npm test             # ledger + domain unit tests (Node's built-in SQLite)
+npm run typecheck    # TypeScript
+npx eslint src       # lint
+npm run verify       # typecheck + tests
 ```
 
-This command will move the starter code to the **example** directory and create a blank **src/app** directory where you can start developing.
+## Running on the Samsung Galaxy S22
 
-### Other setup steps
+### Option A — Expo Go (fastest, works for Phase 1–3)
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Phase 1 uses only modules bundled in Expo Go, so no build is needed.
 
-## Learn more
+1. On the S22, install **Expo Go** from the Play Store.
+2. Connect the phone and the Mac to the same Wi-Fi.
+3. Run `npm start` on the Mac and scan the QR code with Expo Go.
+   - If the network blocks local traffic, run `npx expo start --tunnel` instead.
 
-To learn more about developing your project with Expo, look at the following resources:
+Data lives inside Expo Go's sandbox for this project. It's fine for trying things out, but use Option B or C for real day-to-day data.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+### Option B — Install a standalone APK with free EAS cloud builds (no Android Studio needed)
 
-## Join the community
+```bash
+npx eas-cli@latest login                                  # free Expo account
+npx eas-cli@latest build --platform android --profile preview
+```
 
-Join our community of developers creating universal apps.
+When the build finishes, open the link on the S22 and install the APK. Allow "Install unknown apps" for your browser when Android asks. The free tier is enough for occasional builds, and there is no subscription.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+### Option C — Build locally on the Mac (USB)
+
+One-time setup:
+
+1. Install Android Studio. Then, in *SDK Manager*, install **Android SDK Platform-Tools** and the latest **Android SDK Platform**.
+   This Mac currently has a partial SDK at `~/Library/Android/sdk`, **no JDK and no `adb`**.
+2. Point the shell at the SDK and at Android Studio's bundled JDK (add to `~/.zshrc`):
+   ```bash
+   export ANDROID_HOME="$HOME/Library/Android/sdk"
+   export PATH="$ANDROID_HOME/platform-tools:$PATH"
+   export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+   ```
+3. On the S22, enable developer mode: *Settings → About phone → Software information → tap "Build number" 7 times*. Then turn on *Developer options → USB debugging*.
+4. Plug in the phone, accept the "Allow USB debugging" prompt, and check that `adb devices` lists it.
+
+Build and install:
+
+```bash
+npx expo run:android --device                 # debug build on the connected phone
+npx expo run:android --device --variant release   # release build (signed with the debug key — see note)
+```
+
+For wireless debugging: *Developer options → Wireless debugging → Pair device with pairing code*. Then run `adb pair <ip:port>` followed by `adb connect <ip:port>`.
+
+Notes:
+- `npx expo run:android` generates the `android/` folder (Continuous Native Generation). Never edit it by hand; configure through `app.json`.
+- **Signing:** the generated release build is signed with the debug keystore. That's fine for your own phone. Before Phase 4, create a real upload keystore, because Google Sign-In is tied to the signing certificate's SHA-1.
+- **The folder name contains a space** (`money tracker`). Some native toolchains (CMake/NDK) handle spaces in paths badly. If a native build fails with path errors, rename the folder to `money-tracker`.
+- **Watchman on this Mac is broken** (`libfmt.11.dylib` missing). Fix it with `brew reinstall fmt watchman`. Metro and Jest still work without it (Jest is configured with `watchman: false`).
+
+### Testing data persistence
+
+- Data is stored in `money-tracker.db` inside the app's private storage. It survives app restarts and APK upgrades installed over the existing app.
+- **Uninstalling the app deletes the data.** Until Google Drive backup lands (Phase 4), don't uninstall the app with real data in it.
+- To check: add a location and an expense, force-stop the app (*Settings → Apps → Money Tracker → Force stop*), reopen it, and confirm both are still there. Then install a newer APK over it and check again.
+- Backup and restore after a reinstall will be documented in Phase 4.
+
+### Google authentication (Phase 4)
+
+Phase 4 will add Google Sign-In (`@react-native-google-signin/google-signin`) and Drive's `drive.appdata` scope. It needs:
+- An Android OAuth client in Google Cloud Console for package `dev.moneytracker.app` and the SHA-1 of the signing key (`keytool -list -v -keystore <keystore>`).
+- A development build (Option B or C), because Expo Go can't load this native module.
+
+Change `android.package` in `app.json` **before** creating the OAuth client if you want a different ID.
+
+## Web preview
+
+`npx expo start --web` runs the app in a browser using expo-sqlite's WebAssembly build (see `metro.config.js`). It's handy for quick UI checks; the app targets Android, and native tabs render as a top bar on web.

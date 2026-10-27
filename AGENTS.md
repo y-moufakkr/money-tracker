@@ -39,3 +39,14 @@ Docs: https://docs.expo.dev/eas/index.md
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+
+## Project rules (Money Tracker)
+
+Read [PLAN.md](PLAN.md) and [PROGRESS.md](PROGRESS.md) first. Financial correctness comes before everything else: **one dirham is never counted twice.**
+
+- Amounts are integer minor units (`*_minor`). Never store floats. Parse and format only via `src/domain/money.ts`.
+- All writes that move money go through `src/services/ledger.ts` (or `reconciliation.ts`) inside `db.transaction`. Balances are only computed in `src/services/balances.ts` and never stored.
+- Business money is never added to personal totals. Company ↔ personal transfers require a `transfer_class`.
+- Schema changes need a new numbered migration in `src/db/migrations.ts`. Never edit an applied migration.
+- Services depend on the `Db` interface (`src/db/types.ts`), so they can be tested with `node:sqlite`. Add a test in `src/services/*.test.ts` for every ledger rule.
+- Before finishing: `npx tsc --noEmit`, `npx eslint src`, `npm test`, then update PROGRESS.md.
