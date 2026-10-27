@@ -20,6 +20,8 @@ Guiding rule: **one dirham is never counted twice.** Every balance is derived fr
 | Tests | `jest-expo` preset; DB tests use Node's built-in `node:sqlite` behind the same `Db` interface the app uses | No native modules are needed in tests |
 | Auth/backup (Phase 4) | `@react-native-google-signin/google-signin` 16 + Drive v3 REST via `expo/fetch`, scope `drive.appdata` only | Needs a development build (`expo-dev-client`), not Expo Go |
 | Files (Phase 4) | `expo-file-system` 58 (`File`, `Paths`, `File.pickFileAsync`) + `expo-sharing` | Export files go through the system share sheet |
+| Receipt photos (Phase 5) | `expo-image-picker` 58 (camera + gallery, permissions via its config plugin) + `expo-image-manipulator` 58 (2000 px JPEG) + `expo-image` | Files under `Paths.document/attachments/` |
+| Receipt OCR (Phase 5) | Local Expo module `modules/receipt-ocr`: bundled ML Kit text recognition 16.0.1 (Android), Apple Vision (iOS) | On the device, offline, free; no cloud OCR or LLM. Latin script only (no Arabic). Needs a new native build; web has none |
 
 ## Source layout
 
@@ -34,17 +36,22 @@ src/
                        [id]/analytics, obligation/[id], distribution/[id], modals (assumptions, fiscal-year,
                        obligation-edit, reserve-edit, approve)
   db/                  Db interface, expo adapter, migrations, seed data
-  domain/              pure logic: money (minor units, parsing, formatting, FX), dates (Africa/Casablanca), types
+  domain/              pure logic: money (minor units, parsing, formatting, FX), dates (Africa/Casablanca), types,
+                       receipt-parse (OCR lines → proposed total, date, merchant, items)
   services/            ledger (money writes), balances (all balance + reservation maths), queries (lists),
                        catalog (categories/merchants/products/tags), goals, budgets, analytics, insights,
                        company (fiscal years, assumptions, reserves, P&L, tax estimate), obligations,
                        distributions, overview (SARL dashboard + three totals), company-analytics,
                        backup (snapshot, manifest, verify, restore, divergence, retention), drive-api, export,
-                       recurring (bills, expected payments, reservations), debts (debts and receivables)
-  hooks/               TanStack Query hooks wrapping services (backup.ts: Google account + backup actions)
-  lib/                 platform glue: confirm, files (+ .web), google-auth (+ .web), backup-engine (expo-sqlite), hash
+                       recurring (bills, expected payments, reservations), debts (debts and receivables),
+                       attachments (receipt photos, duplicate guard)
+  hooks/               TanStack Query hooks wrapping services (backup.ts: Google account + backup actions; attachments.ts)
+  lib/                 platform glue: confirm, files (+ .web), google-auth (+ .web), backup-engine (expo-sqlite), hash,
+                       attachment-store (+ .web, OPFS), receipt-photo (picker + resize), receipt-ocr (+ .web), receipt-drafts
   ui/                  design system: theme tokens, Text, Card, Button, Chip, inputs, Icon, FAB
-  test/                node:sqlite adapter, file-backed WAL test DB + backup engine, fake Drive, fixtures
+  test/                node:sqlite adapter, file-backed WAL test DB + backup engine, fake Drive, fixtures, attachment stores
+modules/
+  receipt-ocr/         local Expo module (autolinked): Kotlin (ML Kit) and Swift (Vision) text recognition
 ```
 
 Services take a `Db` argument (`run`, `all`, `first`, `exec`, `transaction`, `exclusive`), so the same code runs on the phone (expo-sqlite) and in Jest (node:sqlite).
@@ -184,9 +191,17 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 - One system category: "Loan interest" (`sys-cat-loan-interest`, in `DEBT_CATEGORIES`).
 - Change triggers on the four new tables.
 
-### Later migrations (planned)
+### v6 — Phase 5 part 2 (implemented)
 
-- **v6**: `attachments(transaction_id, uri, mime, sha256)` (attachment files must then be added to backups)
+- `attachments(id, transaction_id → transactions CASCADE, path UNIQUE, mime, sha256, size > 0, created_at)`. `path` is relative to the documents directory (`attachments/<id>.jpg`; CHECK: no leading `/`, no `..`, no scheme), because the iOS container path changes between installs. Indexes on `transaction_id` and `sha256`. Change triggers.
+
+## Receipt photos and scanning (Phase 5) rules
+
+- **A photo never moves money.** Attachments are written only through `services/attachments.ts` + `saveExpense` (ledger): the file is written first and read back (SHA-256 checked), then the row is inserted inside the expense's transaction; if anything fails, the new files are deleted. Removing a photo deletes its row first, then the file. Deleting a transaction removes its photo rows in the same transaction and the files after the commit.
+- Only expenses carry photos for now. Files are JPEG, long edge ≤ 2000 px, re-encoded (upright, no EXIF location).
+- **Scan flow**: photo → on-device OCR (lines with boxes and confidence) → `parseReceipt` → an in-memory draft (`lib/receipt-drafts`, only its id in the route) → the normal expense form → `saveExpense`. Nothing is saved until the user taps Save; leaving the form deletes the temporary photo. Ownership, company categories and every ledger rule apply as for a typed expense.
+- **Parser (never invent a value)**: the total comes only from a labelled line (NET A PAYER / A PAYER > TOTAL TTC, MONTANT TTC, TOTAL GENERAL > TOTAL, MONTANT, TTC), never from HT, TVA, REMISE, RENDU, ESPECES, CB, sous-total, quantity or points lines, and never from the largest number. Cash − change or the card amount only confirm it. Dates are dd/mm/yyyy, dd-mm-yy, dd.mm.yyyy or yyyy-mm-dd, day first (never swapped); future dates and dates more than two years old are rejected; without a date, today is filled in and flagged. The merchant is matched to existing merchants (accent/case-insensitive, one OCR slip allowed) so none is duplicated; otherwise a known chain, otherwise the top line (low confidence). Items are proposed only when they add up to the total within min(1 DH, max(2 centimes, 0.5 %)); a quantity × price that disagrees with its line total is dropped. Each field has a confidence (high/medium/low, lowered by weak OCR) and its source text; the form marks filled fields "check this" and low ones in amber.
+- **Duplicate guard** before saving: the same photo (SHA-256) already attached to a live transaction, or an expense with the same amount, date and merchant. The user must confirm ("Save anyway").
 
 ## Recurring payments and debts (Phase 5) rules
 
@@ -223,15 +238,16 @@ This is snapshot **backup/restore, not sync**, and the UI says so: nothing is me
 - **Restore**: size + SHA-256 (Drive) → SQLite header check → open an in-memory copy → `integrity_check`, core tables present, `user_version` ≤ app schema, `foreign_key_check` → migrate the **copy** (an older backup is upgraded before anything on the phone changes) → with the write queue held: snapshot the current data as the **recovery copy** (`money-tracker-recovery.db`), read it back and check its row counts → give the copy this device's metadata (device id, backup log, retention, account; the restore and recovery copy) → replace the live database with SQLite's **online backup API** (one transaction into the open connection) → run migrations, `quick_check`, compare every table's row count; on a mismatch the recovery copy is put back → refresh every query.
 - **Undo restore** = restore the recovery copy (its SHA-256 must match `sync_meta`), which itself keeps a recovery copy, so it can be undone too.
 - **Divergence**: local changes = `change_seq > baseline_seq` (or data never backed up). Restoring over local changes requires an explicit choice (back up first / replace). Also warned: a backup from another device, and one older than the local baseline (only when the phone has data: on a fresh install restoring is the expected path). Before backing up: a newer backup from another device that this phone's data does not include, or an empty phone while backups exist.
+- **Receipt photos**: the snapshot's `attachments` table lists every photo with its SHA-256 and size, so the backup's own SHA-256 covers them; the manifest also carries the count and total size (`attachments` app property). On Drive each photo is one file per content (`money-tracker-photo-<sha256>.jpg`, `mt_format = money-tracker-photo/1`), uploaded **before** the database and verified by downloading it again; it is uploaded once and shared by every backup that refers to it. Photo files are never listed as backups and never deleted by retention. A photo missing or damaged on the phone is counted and the backup goes ahead. On restore, every photo the staged copy refers to is checked on the phone (SHA-256) or downloaded from Drive and verified **before** the live database changes; if any is missing, the restore stops unless the user explicitly restores without them (their rows are then left out, shown as a change not in any backup). Files fetched for a restore that fails are removed. "Restore from a file" and "Undo restore" use the phone's photos, and Drive's when signed in.
 - **Auth**: Google Sign-In with `webClientId` (web OAuth client) and scope `drive.appdata`; tokens stay with Play services and are fetched per request (`getTokens`, `clearCachedAccessToken` + retry once on 401). Backups belong to the Google account (each account has its own appDataFolder).
 
 ## Export (Phase 4)
 
 - One row per **posting** (the effect of a transaction on one money location), so each row is on exactly one side: `personal` or `company` (+ company name). A company → personal transfer is two rows. Personal totals are computed from personal rows only; company totals per company; per currency, never converted, never added across sides.
 - Filters: date range, scope (personal / company / both), categories (with subcategories; a selection leaves out transfers and adjustments, uncategorised only on request).
-- CSV: RFC 4180, UTF-8 BOM, CRLF; amounts via `formatDecimal` (`-158.00`); free text starting with `= + - @` is prefixed with `'` (spreadsheet formula injection).
-- JSON: the same entries with `amount` (decimal string) and `amount_minor`, per-side totals (personal also shows salary/dividend income from a company), and per company the fiscal years with assumptions and their **source**, obligations (paid/outstanding) and distributions.
-- Full backup file: the same `VACUUM INTO` snapshot as a `.db` file via the share sheet; restorable from "Restore from a file" (integrity + schema checked; no SHA-256, since the file carries no manifest).
+- CSV: RFC 4180, UTF-8 BOM, CRLF; amounts via `formatDecimal` (`-158.00`); free text starting with `= + - @` is prefixed with `'` (spreadsheet formula injection). CSV columns are unchanged (no photo column).
+- JSON: the same entries with `amount` (decimal string), `amount_minor` and `attachments` (each photo's file name, type, SHA-256 and size; the images stay in Drive backups), per-side totals (personal also shows salary/dividend income from a company), and per company the fiscal years with assumptions and their **source**, obligations (paid/outstanding) and distributions.
+- Full backup file: the same `VACUUM INTO` snapshot as a `.db` file via the share sheet (receipt photos are not inside it); restorable from "Restore from a file" (integrity + schema checked; no SHA-256, since the file carries no manifest).
 
 ## Phases
 
@@ -239,4 +255,4 @@ This is snapshot **backup/restore, not sync**, and the UI says so: nothing is me
 2. Analytics, catalog and price history, tags, budgets, goals and allocations, historical balances, insights ✅
 3. SARL dashboard, obligations, tax estimates, distribution simulator ✅
 4. Google Sign-In, Drive backup/restore, CSV/JSON export ✅ (device check pending)
-5. Recurring bills, debts, simple company estimate, faster expense entry ✅ (part 1); attachments, notifications, automatic backup, OCR evaluation, polish ← **in progress**
+5. Recurring bills, debts, simple company estimate, faster expense entry ✅ (part 1); receipt attachments and on-device receipt scanning ✅ (part 2); notifications, automatic backup, polish ← **in progress**

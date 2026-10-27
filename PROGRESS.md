@@ -8,7 +8,7 @@ Last updated: 2026-10-27
 | 2 — Analytics & savings | ✅ Done (branch `phase-2`, see below) |
 | 3 — Company money | ✅ Done (branch `phase-3`, see below) |
 | 4 — Google Sign-In & Drive backup | ✅ Done (branch `phase-4`); Android device check pending, see the checklist below |
-| 5 — Recurring, debts, attachments, polish | 🔶 Part 1 done (branch `phase-5`): recurring bills, expected income, debts & receivables, simple company estimate, faster expense entry, app icon. Next: Android check, attachments, notifications |
+| 5 — Recurring, debts, attachments, polish | 🔶 Parts 1–2 done (branch `phase-5`): recurring bills, expected income, debts & receivables, simple company estimate, faster expense entry, app icon; receipt photos (schema v6, in backups) and on-device receipt scanning. Next: Android check, notifications |
 
 ## Phase 1 — delivered
 
@@ -82,6 +82,51 @@ Last updated: 2026-10-27
   - Icon-only chips had no accessible name.
   - Per-location trends plotted "0 DH" before the opening date.
 - **Still not verified on a physical Android device.**
+
+## Phase 5 — part 2 delivered: receipt photos and scanning
+
+**Data (migration v6, see [PLAN.md](PLAN.md#v6--phase-5-part-2-implemented))**
+- `attachments` (transaction → CASCADE, path relative to the documents directory, mime, SHA-256, size) with change triggers. Migrations v1–v5 are unchanged; v5 → v6 on a populated database changes no other row.
+
+**OCR (decision: a local Expo module)**
+- [modules/receipt-ocr](modules/receipt-ocr): our own small Expo module, autolinked from `modules/`. Android: Google ML Kit text recognition **bundled** Latin model (`com.google.mlkit:text-recognition:16.0.1`, works offline from the first launch, about +4 MB per CPU architecture). iOS: Apple Vision (`VNRecognizeTextRequest`, accurate, fr-FR/en-US, no language correction). Returns lines with bounding boxes and confidence. Free, MIT-compatible, nothing leaves the phone; no cloud OCR or LLM.
+- Compared and not chosen: `expo-text-extractor` (flat strings, no boxes/confidence, Play-services model that must be downloaded first), `expo-ocr-kit` (blocks only on Android, leftover template WebView, single maintainer), `expo-mlkit-ocr` (ML Kit on iOS instead of Vision), `@infinitered/react-native-mlkit-text-recognition` (ML Kit on both, two packages, last release Nov 2025).
+- **Arabic is not supported**: ML Kit v2 reads Latin, Chinese, Devanagari, Japanese and Korean only. French/Latin receipts are read; Arabic text is ignored.
+- [lib/receipt-ocr.ts](src/lib/receipt-ocr.ts) uses `requireOptionalNativeModule`, so an older build without the module still opens the scan flow (photo attached to an empty form). Web: no OCR.
+
+**Services and domain**
+- [domain/receipt-parse.ts](src/domain/receipt-parse.ts): joins OCR lines into rows using their boxes, then proposes total, date, merchant and items, each with a confidence and its source text, plus warnings. Rules in [PLAN.md](PLAN.md#receipt-photos-and-scanning-phase-5-rules); amounts only via `parseAmount`.
+- [services/attachments.ts](src/services/attachments.ts): `AttachmentStore` port; `saveExpenseWithAttachments` (write file → read back and check SHA-256 → expense + rows in one transaction → remove new files on any failure; removed photos' files deleted after the commit), `removeAttachment`, `deleteTransactionWithFiles`, `findDuplicates` (same SHA-256, or same amount + date + merchant). `saveExpense` takes `attachments` / `removeAttachmentIds`; `deleteTransaction` removes photo rows and returns their paths.
+- [services/backup.ts](src/services/backup.ts): photos uploaded once per content, before the database, each verified by download; manifest `attachments` count/size; restore checks or downloads and verifies every photo before the swap and stops unless "restore without them" is chosen; `verifyRemoteBackup` reports photos present on Drive. Drive uploads take a MIME type.
+- [services/export.ts](src/services/export.ts): JSON entries list their photos (file, type, SHA-256, size). CSV unchanged.
+
+**App**
+- Add sheet → **Scan receipt** → camera opens (on web: Take photo / Choose from gallery) → "Reading receipt…" → the expense form with a **From receipt** banner (thumbnail, warnings), "Read from the receipt: check this" under the amount, merchant, date and items (amber "not sure" when confidence is low). A known merchant brings its usual category and last location, as when it is picked by hand. Items only when they add up.
+- Expense form (new and edit): **Receipt photo** section to take/choose/remove photos; removed photos are deleted on Save. Save stores the expense and photos together; leaving the form deletes the temporary photo. Duplicate guard before saving (`lib/confirm`). Validation messages now use `lib/confirm` (they work on web).
+- Transaction detail: receipt photos (tap → full-screen viewer `/attachments/[id]`); deleting says the photos go too (now via `lib/confirm`).
+- Backups & restore: photo count per backup, photos checked by "Check integrity", "Some receipt photos are missing → Restore without them", photos in the backup/restore messages; the file-restore note says photos are not inside `.db` files.
+- Config: `expo-image-picker` (camera/photo permission texts, microphone off) and `expo-image-manipulator` via `npx expo install`. **A new development/preview build is required** (new native code: ML Kit, image picker).
+
+**Verification (2026-10-27)**
+- `npm test`: 249 tests in 19 suites (211 before + 38 new):
+  - Parser (22): amounts (comma decimals, thousands, DH/MAD, 3-decimal prices, dates/codes not amounts); rows joined from boxes; supermarket (Marjane: TOTAL TTC confirmed by cash − change, items incl. a 2 × 7,50 row and 1,250 kg × 62,00, a discount), Carrefour with boxes and a CB line, pharmacy (NET A PAYER), café (leading counts, dd-mm-yy), fuel station (MONTANT + CB; volume/price not items), TVA invoice (HT/TVA ignored), cash and change (no total invented from them), card amount disagreeing, conflicting totals, label on the previous row, weak OCR, a blurry/partial receipt (nothing extracted), no text, future and too-old dates, no month/day swap, phone numbers, items not adding up, tolerance, inconsistent qty × price; existing merchants reused (accents, partial name, OCR slip).
+  - Attachments (16): save with photo (row, file, SHA-256, balance unchanged); a ledger refusal or a failed file write leaves no file and no row; edit keeps/adds/removes photos and deletes removed files; a photo of another expense cannot be removed; deleting a transaction removes its photos; change triggers and change counter; non-photo files and unsafe paths refused; duplicates (same image, same amount/date/merchant, excluded self and deleted); backup uploads photos once and verified, manifest counts, photo files not listed as backups, integrity check reports them; a damaged photo upload records no backup; photos missing on the phone are counted; restore on a new phone downloads and verifies every photo (data identical); a damaged photo stops the restore with nothing changed (and no stray files) unless restoring without it; `.db` restore uses local photos; JSON export lists photos; v5 → v6 migration on a populated database.
+- `npx tsc --noEmit`, `npx eslint src`: clean. `npx expo-doctor`: 20/20. `npx expo export --platform android`: Hermes bundle builds. `npx expo-modules-autolinking resolve --platform android` lists `expo.modules.receiptocr.ReceiptOcrModule`.
+- Web smoke test (headless Chromium, 412 px, real expo-sqlite/WASM, OPFS for photos, fresh database; the browser MCP servers were unavailable, so a Playwright script was used): Add sheet shows "Scan receipt"; the scan screen explains that reading works on Android; choosing a picture opens the expense form with the "From receipt" banner and the photo; saving 245.90 DH at Carrefour stored one photo file and Wallet 800 → 554.10; detail shows the photo, tap opens the full-screen viewer; scanning the same picture again with the same amount/merchant showed "Already recorded?" with both reasons and saved nothing when dismissed; editing to remove the photo and add another left exactly one (new) file; deleting the expense ("Its receipt photo is deleted too") removed the file. With OCR stubbed on web (not committed), a Marjane receipt prefilled 27 DH, Marjane, 25 Oct and two items with "check this" hints; saving was refused because the receipt date was before the Wallet's opening date (correct ledger rule).
+- **Not yet verified on Android**: camera, gallery, ML Kit reading, photo storage and Drive photo backup. See the checklist below.
+
+### Android checks for receipts (S22, preview build)
+
+1. **Scan**: + → Scan receipt → the camera opens (allow the permission) → photograph a real supermarket receipt → "Reading receipt…" → the form shows the total, store, date (marked "check this") and items only if they add up. Check each field against the paper, Save → the expense appears once; the photo shows on its detail screen and opens full screen.
+2. **Gallery**: Scan receipt → back out of the camera → Choose from gallery → a receipt photo → same as above.
+3. **Hard cases**: a café ticket, a pharmacy receipt (NET A PAYER), a fuel receipt (MONTANT, CB), a receipt with TVA lines, one with ESPECES/RENDU, a crumpled or blurry one (fields left empty rather than wrong), a receipt partly in Arabic (Arabic is ignored). Note which fields were wrong and send the OCR text if possible.
+4. **Offline**: airplane mode, scan again: reading still works.
+5. **Duplicates**: scan the same receipt again → "Already recorded?" → Cancel saves nothing.
+6. **Cancel**: scan, then go back without saving → nothing saved (temporary photo deleted).
+7. **Manual photo**: a typed expense → Take photo → Save; edit it → remove the photo → Save; delete an expense with a photo.
+8. **Permissions**: deny the camera once → the message suggests the gallery; then allow it in Settings.
+9. **Backup**: Back up now → "N receipt photos uploaded and verified"; Backups & restore shows the photo count; Check integrity → "all N receipt photos are on Drive". Reinstall → Restore → photos come back (detail screen shows them).
+10. **Size**: note the APK size compared with the previous preview build (ML Kit adds about 4 MB per CPU architecture).
 
 ## Phase 5 — part 1 delivered
 
@@ -225,6 +270,14 @@ Build: `npx eas-cli@latest build --profile development --platform android` (or `
 
 ## Decisions (Phase 5)
 
+- **OCR is our own local Expo module** (bundled ML Kit on Android, Vision on iOS) rather than a third-party package: none of the candidates returned lines with boxes and confidence from Vision + bundled ML Kit, and ~150 lines of native code we own carry no maintenance risk across SDK upgrades. Bundled (not Play-services) so it works offline from the first launch.
+- **The parser proposes, the user decides.** Only labelled totals are used; payment lines only confirm. A missing field stays empty; the date falls back to today, flagged. Items are proposed only when they add up.
+- **Photos are files, not database blobs**, so the database (and its snapshots) stays small; their SHA-256 and size are in the database, so the backup's hash covers them. On Drive they are stored once per content and never deleted automatically (an older backup may still need them).
+- **Local photo files are named by attachment id** (`attachments/<id>.jpg`). Rows never change, so the same id always means the same content; a restore only fetches what is missing or damaged.
+- **Missing photos never block money data silently**: the restore stops and asks; restoring without them is an explicit choice.
+- **The draft travels in memory** (`lib/receipt-drafts`), keyed by an id in the route; OCR text is not stored.
+- **Photos only on expenses** for now (the scan flow and the form); income and transfers have none.
+
 - **A new transaction kind for loan principal** instead of excluded categories: every income/expense query already lists its kinds, so `debt` is left out everywhere by construction (fail-safe). The price is a one-time rebuild of `transactions` in v5, done now while there is no data on a phone.
 - **Debts are personal.** Company loans stay company obligations or classified company ↔ personal transfers.
 - **Occurrences are computed, not generated**: no background job, editing a rule changes its future dates, only resolved/adjusted dates are stored (UNIQUE per rule and date).
@@ -307,7 +360,11 @@ Build: `npx eas-cli@latest build --profile development --platform android` (or `
 - Backup history lists the signed-in Google account's backups only; switching accounts shows the other account's folder. Local records of uploads to other accounts are kept but not shown.
 - The OAuth consent screen is in "Testing": Google may ask to sign in again every 7 days until it is published (`drive.appdata` is non-sensitive).
 - No progress bar for upload/download (databases are small; the screen shows "Working…").
-- Attachments are not backed up yet: there are none until Phase 5 part 2, which must add them to backups.
+- Receipt OCR: **no Arabic** (ML Kit Latin model); itemisation works only on clearly printed, column-aligned receipts and is skipped when lines do not add up; store names from the top line can be wrong (marked "not sure"); quantity × price is kept only when it matches the line. The iOS Vision code is written but untested (no iOS build). OCR needs the new build; older builds and web attach the photo to an empty form.
+- Receipt photos on Drive are never cleaned up automatically, even after every backup that used them is deleted (they are small and in the private app folder).
+- A `.db` file (Export data → Full backup file) does not contain photos; restoring it uses the phone's photos, or Drive's when signed in.
+- If the app is killed between writing a photo file and committing the expense, that file stays orphaned on the phone (no sweep yet). Photos of data replaced by a restore stay on the phone (the recovery copy may need them).
+- Photos can only be attached to expenses.
 - Bill reminders are in-app only (Home and Bills); phone notifications come with the notification work. The reservation horizon is fixed at 30 days.
 - Bills cannot be settled by a transfer (for example paying a credit card); link an expense or a loan repayment instead.
 - Debts have no interest schedule or amortisation table; interest is entered with each repayment. Forgiving a debt is not recorded as income or expense.
@@ -317,8 +374,8 @@ Build: `npx eas-cli@latest build --profile development --platform android` (or `
 
 1. Run the Phase 4 Android checklist on the S22 with the preview build, plus the Phase 5 screens (bills, debts, expense entry, icon), fix what it finds, then publish the OAuth consent screen.
 2. ✅ Recurring bills and expected payments (and "bills" reservations in My Money), debts and receivables (migration v5).
-3. Receipt attachments (migration v6), included in backups (snapshot + files, with their SHA-256 in the manifest).
+3. ✅ Receipt attachments (migration v6), included in backups, and on-device receipt scanning (OCR) — device check pending.
 4. Notifications: budget thresholds, obligations due, "not backed up for N days" reminder.
 5. Optional automatic backup (e.g. after N changes or daily on Wi-Fi), still never overwriting other devices' backups.
 6. Carried over: allocation history for goal charts; ✅ filtering entry-screen categories by ownership; moving Phase 1–2 confirmations to `lib/confirm.ts`; accessible names for text inputs.
-7. Performance testing with a few years of data (balances, analytics, snapshot/restore time), security review, UI polish, optional OCR evaluation.
+7. Performance testing with a few years of data (balances, analytics, snapshot/restore time), security review, UI polish; OCR tuning from real S22 receipts.
