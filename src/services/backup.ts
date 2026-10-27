@@ -2,6 +2,7 @@ import { migrate, SCHEMA_VERSION, UNTRACKED_TABLES } from '@/db/migrations';
 import type { BindValue, Db } from '@/db/types';
 import { sha256Hex } from '@/lib/hash';
 import { newId, nowISO } from '@/lib/id';
+import type { AttachmentStore } from './attachments';
 
 /**
  * Backup and restore of the whole SQLite database (Phase 4).
@@ -11,6 +12,11 @@ import { newId, nowISO } from '@/lib/id';
  *
  * Native work (snapshot files, opening copies, swapping the live database, Drive HTTP) sits behind
  * the `BackupEngine` and `DriveStore` ports so every rule here runs against node:sqlite in tests.
+ *
+ * Receipt photos (v6) are files next to the database. The snapshot's `attachments` table lists
+ * each one with its SHA-256 and size (so the backup's own SHA-256 covers them). On Drive each
+ * photo is stored once, by content (`money-tracker-photo-<sha256>`), uploaded and verified before
+ * the database; a restore fetches and verifies every photo before the data on the phone changes.
  */
 
 // ---------------------------------------------------------------------------
@@ -26,12 +32,15 @@ export type BackupErrorCode =
   | 'upload-unverified'
   | 'no-recovery'
   | 'recovery-mismatch'
-  | 'restore-unverified';
+  | 'restore-unverified'
+  | 'attachments-missing';
 
 export class BackupError extends Error {
   constructor(
     readonly code: BackupErrorCode,
     message: string,
+    /** For 'attachments-missing': how many photos could not be found or verified. */
+    readonly missing = 0,
   ) {
     super(message);
     this.name = 'BackupError';
@@ -65,6 +74,8 @@ export interface BackupEngine {
   saveRecovery(bytes: Uint8Array): Promise<Uint8Array>;
   /** The stored recovery copy, or null when there is none. */
   loadRecovery(): Promise<Uint8Array | null>;
+  /** Receipt photo files (relative to the documents directory). */
+  readonly attachments: AttachmentStore;
 }
 
 export type DriveFile = {
@@ -76,7 +87,14 @@ export type DriveFile = {
   appProperties?: Record<string, string> | null;
 };
 
-export type DriveUpload = { name: string; bytes: Uint8Array; appProperties: Record<string, string>; description: string };
+export type DriveUpload = {
+  name: string;
+  bytes: Uint8Array;
+  appProperties: Record<string, string>;
+  description: string;
+  /** Defaults to a SQLite database. */
+  mimeType?: string;
+};
 
 /** Google Drive `appDataFolder`, as used by backups. */
 export interface DriveStore {
@@ -373,7 +391,18 @@ export type BackupManifest = {
   /** sync_meta.change_seq inside the snapshot. */
   changeSeq: number;
   rowCounts: Record<string, number>;
+  /** Receipt photos the snapshot refers to (absent in backups made before v6). */
+  attachments?: { count: number; bytes: number };
 };
+
+/** One photo as listed in a snapshot's `attachments` table. */
+export type AttachmentRef = { id: string; path: string; mime: string; sha256: string; size: number };
+
+async function attachmentRefs(db: Db): Promise<AttachmentRef[]> {
+  const has = await db.first(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'attachments'`);
+  if (!has) return [];
+  return db.all<AttachmentRef>('SELECT id, path, mime, sha256, size FROM attachments ORDER BY path');
+}
 
 /** Size and SHA-256 must match the manifest exactly; anything else is a damaged or different file. */
 export async function verifyBytes(bytes: Uint8Array, expected: Pick<BackupManifest, 'size' | 'sha256'>): Promise<void> {
@@ -389,7 +418,7 @@ export async function verifyBytes(bytes: Uint8Array, expected: Pick<BackupManife
   }
 }
 
-export type Snapshot = { bytes: Uint8Array; manifest: BackupManifest };
+export type Snapshot = { bytes: Uint8Array; manifest: BackupManifest; attachments: AttachmentRef[] };
 
 /** Snapshot + manifest. The snapshot is opened and checked before anything uses it. */
 export async function createSnapshot(
@@ -401,8 +430,10 @@ export async function createSnapshot(
   const { copy, inspection } = await openVerified(engine, bytes, 'snapshot');
   try {
     const meta = await getSyncMeta(copy.db);
+    const attachments = await attachmentRefs(copy.db);
     return {
       bytes,
+      attachments,
       manifest: {
         format: MANIFEST_FORMAT,
         formatVersion: 1,
@@ -416,6 +447,7 @@ export async function createSnapshot(
         size: bytes.length,
         changeSeq: meta.changeSeq,
         rowCounts: inspection.rowCounts,
+        attachments: { count: attachments.length, bytes: attachments.reduce((s, a) => s + a.size, 0) },
       },
     };
   } finally {
@@ -444,6 +476,7 @@ export function manifestToDrive(m: BackupManifest): Omit<DriveUpload, 'bytes'> {
       sha256: m.sha256,
       size: String(m.size),
       change_seq: String(m.changeSeq),
+      ...(m.attachments ? { attachments: `${m.attachments.count}/${m.attachments.bytes}` } : {}),
     },
     description: JSON.stringify({ rowCounts: m.rowCounts }),
   };
@@ -467,6 +500,7 @@ export function manifestFromDrive(f: DriveFile): BackupManifest | null {
   } catch {
     // Counts are informative only; the hash is what protects the data.
   }
+  const att = /^(\d+)\/(\d+)$/.exec(p.attachments ?? '');
   return {
     format: MANIFEST_FORMAT,
     formatVersion: 1,
@@ -480,7 +514,71 @@ export function manifestFromDrive(f: DriveFile): BackupManifest | null {
     size,
     changeSeq,
     rowCounts,
+    ...(att ? { attachments: { count: Number(att[1]), bytes: Number(att[2]) } } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Photos on Drive (stored once per content, never mixed up with backups)
+
+export const PHOTO_FORMAT = 'money-tracker-photo/1';
+
+export function photoDriveName(sha256: string, mime: string): string {
+  const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : mime === 'image/heic' ? 'heic' : 'jpg';
+  return `money-tracker-photo-${sha256}.${ext}`;
+}
+
+export function isPhotoFile(f: DriveFile): boolean {
+  return f.appProperties?.mt_format === PHOTO_FORMAT || f.name.startsWith('money-tracker-photo-');
+}
+
+/** Drive photos by SHA-256 (only files whose recorded size matches). */
+function photosBySha(files: DriveFile[]): Map<string, DriveFile> {
+  const map = new Map<string, DriveFile>();
+  for (const f of files) {
+    const p = f.appProperties ?? {};
+    if (p.mt_format !== PHOTO_FORMAT || !/^[0-9a-f]{64}$/.test(p.sha256 ?? '')) continue;
+    if (f.size != null && String(f.size) !== p.size) continue;
+    map.set(p.sha256, f);
+  }
+  return map;
+}
+
+/**
+ * Uploads the photos a snapshot refers to that Drive does not have yet, each verified by
+ * downloading it again. A photo whose file is missing or damaged on this phone cannot be backed
+ * up; it is counted, and the backup of the data goes ahead.
+ */
+async function uploadPhotos(engine: BackupEngine, drive: DriveStore, refs: AttachmentRef[]): Promise<{ uploaded: number; missing: number }> {
+  if (!refs.length) return { uploaded: 0, missing: 0 };
+  const onDrive = photosBySha(await drive.list());
+  let uploaded = 0;
+  let missing = 0;
+  const done = new Set<string>();
+  for (const ref of refs) {
+    if (onDrive.has(ref.sha256) || done.has(ref.sha256)) continue;
+    const bytes = await engine.attachments.read(ref.path);
+    if (!bytes || bytes.length !== ref.size || (await sha256Hex(bytes)) !== ref.sha256) {
+      missing++;
+      continue;
+    }
+    const file = await drive.upload({
+      name: photoDriveName(ref.sha256, ref.mime),
+      bytes,
+      mimeType: ref.mime,
+      appProperties: { mt_format: PHOTO_FORMAT, sha256: ref.sha256, size: String(ref.size) },
+      description: '',
+    });
+    try {
+      await verifyBytes(await drive.download(file.id), ref);
+    } catch (e) {
+      await drive.remove(file.id).catch(() => undefined);
+      throw new BackupError('upload-unverified', `A receipt photo could not be verified after upload, so nothing was backed up: ${(e as Error).message}`);
+    }
+    done.add(ref.sha256);
+    uploaded++;
+  }
+  return { uploaded, missing };
 }
 
 export type RemoteBackup = {
@@ -494,6 +592,7 @@ export type RemoteBackup = {
 
 export function toRemoteBackups(files: DriveFile[]): RemoteBackup[] {
   return files
+    .filter((f) => !isPhotoFile(f))
     .map((f) => ({
       fileId: f.id,
       name: f.name,
@@ -660,6 +759,8 @@ export type BackupResult = {
   deleted: string[];
   /** Old backups could not be cleaned up; the new backup is still complete and verified. */
   retentionError: string | null;
+  /** Receipt photos uploaded now, and photos whose file is missing or damaged on this phone. */
+  photos: { uploaded: number; missing: number };
 };
 
 /**
@@ -671,7 +772,9 @@ export async function backupToDrive(
   drive: DriveStore,
   ctx: { appVersion: string; deviceName: string | null; accountEmail: string | null },
 ): Promise<BackupResult> {
-  const { bytes, manifest } = await createSnapshot(engine, ctx);
+  const { bytes, manifest, attachments } = await createSnapshot(engine, ctx);
+  // Photos first: a recorded backup always has its photos on Drive.
+  const photos = await uploadPhotos(engine, drive, attachments);
   const uploaded = await drive.upload({ ...manifestToDrive(manifest), bytes });
   try {
     await verifyBytes(await drive.download(uploaded.id), manifest);
@@ -695,7 +798,7 @@ export async function backupToDrive(
     retentionError = (e as Error).message;
   }
   await markBackupsDeleted(engine.live, deleted);
-  return { manifest, fileId: uploaded.id, deleted, retentionError };
+  return { manifest, fileId: uploaded.id, deleted, retentionError, photos };
 }
 
 /** Deletes one backup chosen by the user. The only valid backup is never deleted. */
@@ -709,7 +812,9 @@ export async function deleteRemoteBackup(db: Db, drive: DriveStore, fileId: stri
   await markBackupsDeleted(db, [fileId]);
 }
 
-export type VerifyResult = { ok: true; inspection: Inspection } | { ok: false; code: BackupErrorCode | 'unknown'; message: string };
+export type VerifyResult =
+  | { ok: true; inspection: Inspection; photos: { total: number; onDrive: number } }
+  | { ok: false; code: BackupErrorCode | 'unknown'; message: string };
 
 /** Downloads a backup and checks size, SHA-256, SQLite integrity and schema, without restoring it. */
 export async function verifyRemoteBackup(engine: BackupEngine, drive: DriveStore, remote: RemoteBackup): Promise<VerifyResult> {
@@ -718,8 +823,14 @@ export async function verifyRemoteBackup(engine: BackupEngine, drive: DriveStore
   try {
     await verifyBytes(bytes, remote.manifest);
     const { copy, inspection } = await openVerified(engine, bytes);
-    await copy.close();
-    return { ok: true, inspection };
+    let refs: AttachmentRef[];
+    try {
+      refs = await attachmentRefs(copy.db);
+    } finally {
+      await copy.close();
+    }
+    const onDrive = refs.length ? photosBySha(await drive.list()) : new Map<string, DriveFile>();
+    return { ok: true, inspection, photos: { total: refs.length, onDrive: refs.filter((r) => onDrive.has(r.sha256)).length } };
   } catch (e) {
     if (e instanceof BackupError) return { ok: false, code: e.code, message: e.message };
     return { ok: false, code: 'unknown', message: (e as Error).message };
@@ -739,7 +850,52 @@ export type RestoreResult = {
   schemaVersion: number;
   rowCounts: Record<string, number>;
   recovery: { at: string; label: string; size: number };
+  /** Photos fetched from Drive now, and photos left out (only with `allowMissingPhotos`). */
+  photos: { fetched: number; missing: number };
 };
+
+export type RestoreOptions = {
+  /** Where photos that are not on this phone can be fetched (Google Drive, when signed in). */
+  drive?: DriveStore | null;
+  /** Restore even when some photos cannot be found or verified; their rows are left out. */
+  allowMissingPhotos?: boolean;
+};
+
+/**
+ * Makes sure every photo the staged data refers to is on this phone with the right SHA-256:
+ * files already here are checked, the others are downloaded from Drive and verified before being
+ * written. Returns the files created (removed again if the restore fails) and what is missing.
+ */
+async function stagePhotos(engine: BackupEngine, staged: Db, drive: DriveStore | null | undefined) {
+  const refs = await attachmentRefs(staged);
+  const created: string[] = [];
+  const missing: AttachmentRef[] = [];
+  let fetched = 0;
+  let onDrive: Map<string, DriveFile> | null = null;
+  for (const ref of refs) {
+    const local = await engine.attachments.read(ref.path);
+    if (local && local.length === ref.size && (await sha256Hex(local)) === ref.sha256) continue;
+    let ok = false;
+    if (drive) {
+      try {
+        onDrive ??= photosBySha(await drive.list());
+        const f = onDrive.get(ref.sha256);
+        if (f) {
+          const bytes = await drive.download(f.id);
+          await verifyBytes(bytes, ref);
+          await engine.attachments.write(ref.path, bytes);
+          if (!local) created.push(ref.path);
+          fetched++;
+          ok = true;
+        }
+      } catch {
+        // Offline, gone or damaged: reported as missing below.
+      }
+    }
+    if (!ok) missing.push(ref);
+  }
+  return { created, missing, fetched };
+}
 
 async function copyRows(from: Db, to: Db, table: string): Promise<void> {
   const rows = await from.all<Record<string, BindValue>>(`SELECT * FROM ${table}`);
@@ -803,14 +959,33 @@ async function adoptLocalMetadata(
  * 4. replace the live database in one SQLite transaction, run migrations, and compare every
  *    table's row count with the copy. On a mismatch the recovery copy is put back.
  */
-export async function restoreFromBytes(engine: BackupEngine, bytes: Uint8Array, source: RestoreSource, at = nowISO()): Promise<RestoreResult> {
+export async function restoreFromBytes(
+  engine: BackupEngine,
+  bytes: Uint8Array,
+  source: RestoreSource,
+  at = nowISO(),
+  opts: RestoreOptions = {},
+): Promise<RestoreResult> {
   if (source.kind === 'drive') await verifyBytes(bytes, source.manifest);
   const { copy: staged, inspection } = await openVerified(engine, bytes);
+  let created: string[] = [];
   try {
     try {
       await migrate(staged.db);
     } catch (e) {
       throw new BackupError('corrupt', `The backup could not be upgraded to this app's data format: ${(e as Error).message}`);
+    }
+
+    // Photos are fetched and verified before anything on the phone changes.
+    const photos = await stagePhotos(engine, staged.db, opts.drive);
+    created = photos.created;
+    const n = photos.missing.length;
+    if (n && !opts.allowMissingPhotos) {
+      throw new BackupError(
+        'attachments-missing',
+        `${n} receipt photo${n === 1 ? ' is' : 's are'} not on this phone${opts.drive ? ' or on Google Drive' : ''}, or could not be verified. The money data is complete; you can restore it without ${n === 1 ? 'that photo' : 'those photos'}.`,
+        n,
+      );
     }
 
     return await engine.live.exclusive(async (held) => {
@@ -831,6 +1006,10 @@ export async function restoreFromBytes(engine: BackupEngine, bytes: Uint8Array, 
       };
 
       await adoptLocalMetadata(staged.db, held, source, recovery);
+      if (n) {
+        // Left out on request. Done after the baseline is set, so it shows as a change not in any backup.
+        await staged.db.run(`DELETE FROM attachments WHERE id IN (${photos.missing.map(() => '?').join(',')})`, photos.missing.map((m) => m.id));
+      }
       const want = await tableRowCounts(staged.db);
       await engine.replaceLive(staged);
       try {
@@ -854,30 +1033,46 @@ export async function restoreFromBytes(engine: BackupEngine, bytes: Uint8Array, 
         schemaVersion: SCHEMA_VERSION,
         rowCounts: await tableRowCounts(held, { dataOnly: true }),
         recovery: { at: recovery.at, label: recovery.label, size: recovery.size },
+        photos: { fetched: photos.fetched, missing: n },
       };
     });
+  } catch (e) {
+    // Photos downloaded for a restore that did not happen are not referenced by anything.
+    for (const p of created) await engine.attachments.remove(p).catch(() => undefined);
+    throw e;
   } finally {
     await staged.close();
   }
 }
 
-export async function restoreFromDrive(engine: BackupEngine, drive: DriveStore, remote: RemoteBackup): Promise<RestoreResult> {
+export async function restoreFromDrive(
+  engine: BackupEngine,
+  drive: DriveStore,
+  remote: RemoteBackup,
+  opts: Omit<RestoreOptions, 'drive'> = {},
+): Promise<RestoreResult> {
   if (!remote.manifest) throw new BackupError('not-money-tracker', 'This file has no backup information and cannot be restored.');
   const bytes = await drive.download(remote.fileId);
-  return restoreFromBytes(engine, bytes, {
-    kind: 'drive',
-    label: `the backup of ${remote.manifest.createdAt.slice(0, 16).replace('T', ' ')} UTC`,
-    manifest: remote.manifest,
-  });
+  return restoreFromBytes(
+    engine,
+    bytes,
+    {
+      kind: 'drive',
+      label: `the backup of ${remote.manifest.createdAt.slice(0, 16).replace('T', ' ')} UTC`,
+      manifest: remote.manifest,
+    },
+    undefined,
+    { ...opts, drive },
+  );
 }
 
 /** Puts back the recovery copy (the data as it was before the last restore). Reversible too. */
-export async function undoRestore(engine: BackupEngine): Promise<RestoreResult> {
+export async function undoRestore(engine: BackupEngine, opts: RestoreOptions = {}): Promise<RestoreResult> {
   const meta = await getSyncMeta(engine.live);
   const bytes = await engine.loadRecovery();
   if (!bytes || !meta.recoverySha256) throw new BackupError('no-recovery', 'There is no recovery copy on this phone.');
   if ((await sha256Hex(bytes)) !== meta.recoverySha256 || bytes.length !== meta.recoverySize) {
     throw new BackupError('recovery-mismatch', 'The recovery copy on this phone is damaged and was not used.');
   }
-  return restoreFromBytes(engine, bytes, { kind: 'recovery', label: 'the recovery copy (undo)' });
+  return restoreFromBytes(engine, bytes, { kind: 'recovery', label: 'the recovery copy (undo)' }, undefined, opts);
 }

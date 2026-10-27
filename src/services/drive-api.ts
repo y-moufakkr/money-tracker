@@ -114,7 +114,7 @@ export function createDriveStore(fetchFn: FetchLike, tokens: TokenSource): Drive
       const metadata = {
         name: u.name,
         parents: ['appDataFolder'],
-        mimeType: 'application/vnd.sqlite3',
+        mimeType: u.mimeType ?? 'application/vnd.sqlite3',
         appProperties: u.appProperties,
         description: u.description,
       };

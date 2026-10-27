@@ -21,6 +21,20 @@ export type ExpenseInput = {
   items?: PurchaseItemInput[];
   /** Tags on the whole expense. Undefined keeps the current tags when editing. */
   tagIds?: string[];
+  /** Photo files already written by `services/attachments.ts`; their rows are added in this transaction. */
+  attachments?: AttachmentInput[];
+  /** Attachments of this expense to remove (their files are deleted after the commit). */
+  removeAttachmentIds?: string[];
+};
+
+/** A file already written under the documents directory, waiting for its row. */
+export type AttachmentInput = {
+  id: string;
+  /** Relative to the documents directory, e.g. `attachments/<id>.jpg`. */
+  path: string;
+  mime: string;
+  sha256: string;
+  size: number;
 };
 
 export type IncomeInput = {
@@ -194,6 +208,27 @@ async function insertItems(tx: Db, transactionId: string, items: PurchaseItemInp
   }
 }
 
+const ATTACHMENT_PATH = /^attachments\/[A-Za-z0-9-]+\.[a-z0-9]+$/;
+
+/** Removes the listed attachments (they must belong to `transactionId`), then adds the new ones. */
+async function writeAttachments(tx: Db, transactionId: string, add: AttachmentInput[], removeIds: string[]) {
+  for (const id of new Set(removeIds)) {
+    const r = await tx.run('DELETE FROM attachments WHERE id = ? AND transaction_id = ?', [id, transactionId]);
+    if (r.changes !== 1) throw new LedgerError('Photo not found on this expense.');
+  }
+  const ts = nowISO();
+  for (const a of add) {
+    if (!ATTACHMENT_PATH.test(a.path)) throw new LedgerError('Photo path is invalid.');
+    if (!/^[0-9a-f]{64}$/.test(a.sha256) || !Number.isSafeInteger(a.size) || a.size <= 0) {
+      throw new LedgerError('Photo file is invalid.');
+    }
+    await tx.run(
+      `INSERT INTO attachments (id, transaction_id, path, mime, sha256, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [a.id, transactionId, a.path, a.mime, a.sha256, a.size, ts],
+    );
+  }
+}
+
 async function insertPosting(tx: Db, transactionId: string, accountId: string, amount: number, role: string) {
   await tx.run(
     'INSERT INTO postings (id, transaction_id, account_id, amount_minor, role, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -316,6 +351,7 @@ export async function saveExpense(db: Db, input: ExpenseInput, id: string | null
     await insertPosting(tx, txId, account.id, -input.amountMinor, 'main');
     await insertItems(tx, txId, items);
     if (input.tagIds !== undefined) await writeTransactionTags(tx, txId, input.tagIds);
+    await writeAttachments(tx, txId, input.attachments ?? [], input.removeAttachmentIds ?? []);
     return txId;
   });
 }
@@ -490,9 +526,11 @@ export async function saveDebtMovement(db: Db, input: DebtMovementInput, id: str
  * Soft-deletes a transaction (and its linked fee or interest). Balances recalculate
  * automatically. Deleting a reconciliation adjustment re-opens that reconciliation;
  * deleting a payment re-opens the obligation, distribution, debt or bill it paid.
+ * Its photo rows are removed; the returned paths are the files to delete after the commit
+ * (`deleteTransactionWithFiles` in services/attachments.ts does that).
  */
-export async function deleteTransaction(db: Db, id: string): Promise<void> {
-  await db.transaction(async (tx) => {
+export async function deleteTransaction(db: Db, id: string): Promise<string[]> {
+  return db.transaction(async (tx) => {
     const row = await tx.first<{ deleted_at: string | null }>('SELECT deleted_at FROM transactions WHERE id = ?', [id]);
     if (!row || row.deleted_at) throw new LedgerError('Transaction not found.');
     const ts = nowISO();
@@ -518,5 +556,11 @@ export async function deleteTransaction(db: Db, id: string): Promise<void> {
        WHERE adjustment_transaction_id = ?`,
       [ts.slice(0, 10), id],
     );
+    const photos = await tx.all<{ path: string }>(
+      'SELECT path FROM attachments WHERE transaction_id IN (SELECT id FROM transactions WHERE id = ? OR parent_id = ?)',
+      [id, id],
+    );
+    await tx.run('DELETE FROM attachments WHERE transaction_id IN (SELECT id FROM transactions WHERE id = ? OR parent_id = ?)', [id, id]);
+    return photos.map((p) => p.path);
   });
 }

@@ -105,7 +105,13 @@ export function useBackUpNow() {
         notify(
           'Backup complete',
           `Uploaded and verified: the copy on Google Drive was downloaded again and its SHA-256 matches.${
+            r.photos.uploaded ? ` ${r.photos.uploaded} receipt photo${r.photos.uploaded > 1 ? 's' : ''} uploaded and verified.` : ''
+          }${
             r.deleted.length ? ` ${r.deleted.length} older backup${r.deleted.length > 1 ? 's' : ''} from this phone removed.` : ''
+          }${
+            r.photos.missing
+              ? `\n\n${r.photos.missing} receipt photo${r.photos.missing > 1 ? 's are' : ' is'} missing or damaged on this phone and could not be backed up.`
+              : ''
           }${r.retentionError ? `\n\nOlder backups could not be cleaned up (${r.retentionError}). They will be retried next time.` : ''}`,
         ),
       onError: (e) => notify('Backup failed', `${e.message}\n\nNothing on this phone was changed.`),
@@ -120,7 +126,11 @@ export function useBackUpNow() {
 
 export function restoredMessage(r: RestoreResult): string {
   const migrated = r.fromSchema < r.schemaVersion ? ` It was upgraded from data format v${r.fromSchema} to v${r.schemaVersion}.` : '';
-  return `${countsLabel(r.rowCounts)}.${migrated}\n\nYour previous data is kept as a recovery copy: “Undo restore” in Backups & restore puts it back.`;
+  const photos =
+    r.photos.fetched || r.photos.missing
+      ? `\n\nReceipt photos: ${r.photos.fetched} downloaded from Google Drive and verified${r.photos.missing ? `, ${r.photos.missing} left out (missing or damaged)` : ''}.`
+      : '';
+  return `${countsLabel(r.rowCounts)}.${migrated}${photos}\n\nYour previous data is kept as a recovery copy: “Undo restore” in Backups & restore puts it back.`;
 }
 
 /**

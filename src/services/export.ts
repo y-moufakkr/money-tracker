@@ -275,7 +275,29 @@ export function toCsv(entries: ExportEntry[]): string {
 
 const money = (minor: number, currency: string) => ({ amount: formatDecimal(minor, currency), amount_minor: minor });
 
-function entryJson(e: ExportEntry) {
+type PhotoJson = { file: string; mime: string; sha256: string; size: number };
+
+/** Receipt photos per transaction: listed (file, type, SHA-256, size), never embedded. */
+async function photosByTransaction(db: Db, ids: string[]): Promise<Map<string, PhotoJson[]>> {
+  const map = new Map<string, PhotoJson[]>();
+  const unique = [...new Set(ids)];
+  for (let i = 0; i < unique.length; i += 500) {
+    const chunk = unique.slice(i, i + 500);
+    const rows = await db.all<{ transaction_id: string; path: string; mime: string; sha256: string; size: number }>(
+      `SELECT transaction_id, path, mime, sha256, size FROM attachments WHERE transaction_id IN (${chunk.map(() => '?').join(',')})
+       ORDER BY created_at, id`,
+      chunk,
+    );
+    for (const r of rows) {
+      const list = map.get(r.transaction_id) ?? [];
+      list.push({ file: r.path, mime: r.mime, sha256: r.sha256, size: r.size });
+      map.set(r.transaction_id, list);
+    }
+  }
+  return map;
+}
+
+function entryWithPhotos(e: ExportEntry, photos: Map<string, PhotoJson[]>) {
   return {
     transaction_id: e.transactionId,
     date: e.date,
@@ -294,6 +316,7 @@ function entryJson(e: ExportEntry) {
     tags: e.tags,
     note: e.note,
     items: e.itemCount,
+    attachments: photos.get(e.transactionId) ?? [],
   };
 }
 
@@ -316,6 +339,11 @@ const bpJson = (bp: number | null) => (bp === null ? null : { percent: (bp / 100
 
 export async function exportJson(db: Db, f: ExportFilter, ctx: { appVersion: string }, entries?: ExportEntry[]) {
   const rows = entries ?? (await exportEntries(db, f));
+  const photos = await photosByTransaction(
+    db,
+    rows.map((e) => e.transactionId),
+  );
+  const entryJson = (e: ExportEntry) => entryWithPhotos(e, photos);
   const personal = rows.filter((e) => e.side === 'personal');
   const out: Record<string, unknown> = {
     format: 'money-tracker-export',
@@ -335,6 +363,7 @@ export async function exportJson(db: Db, f: ExportFilter, ctx: { appVersion: str
       'Each entry is the effect of one transaction on one money location. Personal and company money are listed and totalled separately and are never added together.',
       'Totals are per currency; nothing is converted.',
       'type "debt" is loan principal moving in or out (borrowed, lent, repaid). It is never income or expense; interest paid is a separate expense.',
+      'attachments lists receipt photos by file name, type, SHA-256 and size; the images themselves are in Google Drive backups, not in this file.',
     ],
   };
   if (f.scope !== 'company') {

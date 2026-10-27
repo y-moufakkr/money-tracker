@@ -6,6 +6,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { migrate } from '@/db/migrations';
 import type { Db } from '@/db/types';
 import type { BackupEngine, DatabaseCopy, DriveFile, DriveStore, DriveUpload } from '@/services/backup';
+import { fsAttachmentStore } from './attachment-store';
 import { wrapNodeDb } from './node-db';
 
 type NodeCopy = DatabaseCopy & { raw: DatabaseSync };
@@ -25,6 +26,7 @@ export async function createFileTestDb(version?: number) {
   const db: Db = wrapNodeDb(raw);
   await migrate(db, version);
   let n = 0;
+  const attachments = fsAttachmentStore(join(dir, 'documents'));
 
   const open = async (bytes: Uint8Array): Promise<NodeCopy> => {
     const mem = new DatabaseSync(':memory:');
@@ -55,12 +57,14 @@ export async function createFileTestDb(version?: number) {
       return new Uint8Array(readFileSync(recoveryPath));
     },
     loadRecovery: async () => (existsSync(recoveryPath) ? new Uint8Array(readFileSync(recoveryPath)) : null),
+    attachments,
   };
 
   return {
     db,
     raw,
     engine,
+    attachments,
     dir,
     livePath,
     recoveryPath,

@@ -660,6 +660,29 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 6,
+    name: 'receipt attachments',
+    up: async (tx) => {
+      // Photo files live in the app's documents directory; rows keep a path relative to it (the
+      // iOS container path changes between installs). Each file's SHA-256 is what backups verify.
+      await tx.exec(`
+        CREATE TABLE attachments (
+          id TEXT PRIMARY KEY NOT NULL,
+          transaction_id TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+          path TEXT NOT NULL UNIQUE CHECK (path NOT LIKE '/%' AND path NOT LIKE '%..%' AND path NOT LIKE '%://%'),
+          mime TEXT NOT NULL,
+          sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+          size INTEGER NOT NULL CHECK (size > 0),
+          created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_attachments_transaction ON attachments(transaction_id);
+        CREATE INDEX idx_attachments_sha256 ON attachments(sha256);
+      `);
+      await tx.exec(changeTriggersSql('attachments'));
+    },
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

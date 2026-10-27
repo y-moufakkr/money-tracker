@@ -196,7 +196,7 @@ describe('migrations', () => {
     const indexes = await schema();
     const seq = (await getSyncMeta(db)).changeSeq;
 
-    expect(await migrate(db)).toBe(5);
+    expect(await migrate(db, 5)).toBe(5);
     expect(await version(db)).toBe(5);
     const after = await snapshot();
     // Same rows in the same order; the only new data is the "Loan interest" category.
@@ -227,7 +227,7 @@ describe('migrations', () => {
     expect((await getSyncMeta(db)).changeSeq).toBeGreaterThan(seq + 1);
     // The new kind is accepted.
     await saveDebt(db, { direction: 'owe', counterparty: 'Brother', principalMinor: 50_000, startDate: today, originAccountId: ids.bank });
-    expect(await migrate(db)).toBe(5);
+    expect(await migrate(db, 5)).toBe(5);
   });
 
   it('refuses a database from a newer app version', async () => {

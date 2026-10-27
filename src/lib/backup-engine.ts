@@ -10,6 +10,7 @@ import {
 import { expoDb } from '@/db/expo';
 import type { Db } from '@/db/types';
 import type { BackupEngine, DatabaseCopy } from '@/services/backup';
+import { attachmentStore } from './attachment-store';
 
 export const RECOVERY_DATABASE_NAME = 'money-tracker-recovery.db';
 
@@ -19,7 +20,8 @@ export const RECOVERY_DATABASE_NAME = 'money-tracker-recovery.db';
  * - copies are deserialized into memory, never written over the app's file;
  * - the live database is replaced with SQLite's online backup API into the open connection, so
  *   the swap is one transaction (no file juggling next to a WAL, no closed-connection window);
- * - the recovery copy is a second database file in the same directory.
+ * - the recovery copy is a second database file in the same directory;
+ * - receipt photos are files under the documents directory (`lib/attachment-store`).
  */
 export function expoBackupEngine(sqlite: SQLiteDatabase, live: Db): BackupEngine {
   const handles = new WeakMap<DatabaseCopy, SQLiteDatabase>();
@@ -69,5 +71,6 @@ export function expoBackupEngine(sqlite: SQLiteDatabase, live: Db): BackupEngine
       }
     },
     loadRecovery: () => readAndDelete(RECOVERY_DATABASE_NAME, false),
+    attachments: attachmentStore,
   };
 }

@@ -128,6 +128,9 @@ export function useExportPreview(filter: ExportFilter) {
   return useQuery({ queryKey: ['ledger', 'export', filter], queryFn: () => exportEntries(db, filter), placeholderData: (prev) => prev });
 }
 
+/** Photos missing on this phone can be fetched from Drive when signed in. */
+const photoSource = () => (useAuthStore.getState().status === 'signed-in' ? drive : null);
+
 const ctx = () => ({ appVersion: APP_VERSION, deviceName: deviceName(), accountEmail: useAuthStore.getState().account?.email ?? null });
 
 /** Backup actions. A restore refreshes every query, since all data changed at once. */
@@ -145,12 +148,23 @@ export function useBackupActions() {
     }),
     verify: useMutation({ mutationFn: (remote: RemoteBackup) => verifyRemoteBackup(engine, drive, remote) }),
     remove: useMutation({ mutationFn: (fileId: string) => deleteRemoteBackup(db, drive, fileId), onSettled: refreshDrive }),
-    restoreRemote: useMutation({ mutationFn: (remote: RemoteBackup) => restoreFromDrive(engine, drive, remote), onSettled: refreshAll }),
-    restoreFile: useMutation({
-      mutationFn: (file: { name: string; bytes: Uint8Array }) => restoreFromBytes(engine, file.bytes, { kind: 'file', label: file.name }),
+    restoreRemote: useMutation({
+      mutationFn: (v: { remote: RemoteBackup; allowMissingPhotos?: boolean }) =>
+        restoreFromDrive(engine, drive, v.remote, { allowMissingPhotos: v.allowMissingPhotos }),
       onSettled: refreshAll,
     }),
-    undo: useMutation({ mutationFn: () => undoRestore(engine), onSettled: refreshAll }),
+    restoreFile: useMutation({
+      mutationFn: (v: { file: { name: string; bytes: Uint8Array }; allowMissingPhotos?: boolean }) =>
+        restoreFromBytes(engine, v.file.bytes, { kind: 'file', label: v.file.name }, undefined, {
+          drive: photoSource(),
+          allowMissingPhotos: v.allowMissingPhotos,
+        }),
+      onSettled: refreshAll,
+    }),
+    undo: useMutation({
+      mutationFn: (v: { allowMissingPhotos?: boolean }) => undoRestore(engine, { drive: photoSource(), allowMissingPhotos: v.allowMissingPhotos }),
+      onSettled: refreshAll,
+    }),
     snapshot: useMutation({ mutationFn: () => createSnapshot(engine, ctx()) }),
     setKeep: useMutation({
       mutationFn: (keep: number) => setKeepBackups(db, keep),

@@ -6,7 +6,7 @@ import { formatTimestamp } from '@/domain/dates';
 import { useBackupActions, useBackupStatus, useGoogleAccount, useRemoteBackups } from '@/hooks/backup';
 import { confirmAction, notify } from '@/lib/confirm';
 import { pickFile } from '@/lib/files';
-import { isSqliteFile, KEEP_BACKUP_CHOICES, type RemoteBackup, type VerifyResult } from '@/services/backup';
+import { BackupError, isSqliteFile, KEEP_BACKUP_CHOICES, type RemoteBackup, type VerifyResult } from '@/services/backup';
 import { ChipGroup } from '@/ui/fields';
 import { Banner, Button, Card, Chip, Divider, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
@@ -50,6 +50,7 @@ function BackupCard({
           </Text>
           <Text variant="caption" tone="faint">
             {countsLabel(m.rowCounts)}
+            {m.attachments?.count ? ` · ${m.attachments.count} receipt photo${m.attachments.count > 1 ? 's' : ''} (${formatBytes(m.attachments.bytes)})` : ''}
           </Text>
         </>
       ) : (
@@ -61,6 +62,11 @@ function BackupCard({
         (check.ok ? (
           <Text variant="caption" color={c.positive}>
             ✓ Intact: size, SHA-256 and SQLite integrity check pass ({countsLabel(check.inspection.rowCounts)})
+            {check.photos.total
+              ? check.photos.onDrive === check.photos.total
+                ? ` · all ${check.photos.total} receipt photos are on Drive`
+                : ` · ${check.photos.total - check.photos.onDrive} of ${check.photos.total} receipt photos are missing on Drive`
+              : ''}
           </Text>
         ) : (
           <Text variant="caption" color={c.negative}>
@@ -96,6 +102,11 @@ export default function BackupScreen() {
 
   const restoreDone = { onSuccess: (r: Parameters<typeof restoredMessage>[0]) => notify('Restored', restoredMessage(r)) };
   const restoreFailed = (e: Error) => notify('Nothing was restored', `${e.message}\n\nThe data on this phone is unchanged.`);
+  // Missing receipt photos: nothing has changed yet; the user may restore the money data without them.
+  const failedOr = (retry: () => void) => (e: Error) =>
+    e instanceof BackupError && e.code === 'attachments-missing'
+      ? confirmAction('Some receipt photos are missing', `${e.message}\n\nNothing on this phone has changed yet.`, 'Restore without them', retry, true)
+      : restoreFailed(e);
 
   const verify = (remote: RemoteBackup) => {
     const fileId = remote.fileId;
@@ -109,9 +120,9 @@ export default function BackupScreen() {
   const restore = (remote: RemoteBackup) => {
     const manifest = remote.manifest;
     if (!manifest) return;
-    confirmRestore(manifest, `the backup of ${formatTimestamp(manifest.createdAt)}`, () =>
-      actions.restoreRemote.mutate(remote, { ...restoreDone, onError: restoreFailed }),
-    );
+    const run = (allowMissingPhotos = false): void =>
+      actions.restoreRemote.mutate({ remote, allowMissingPhotos }, { ...restoreDone, onError: failedOr(() => run(true)) });
+    confirmRestore(manifest, `the backup of ${formatTimestamp(manifest.createdAt)}`, () => run());
   };
   const remove = (remote: RemoteBackup) => {
     const fileId = remote.fileId;
@@ -133,18 +144,23 @@ export default function BackupScreen() {
       return;
     }
     const picked = file;
-    confirmRestore(null, `the file “${picked.name}”`, () => actions.restoreFile.mutate(picked, { ...restoreDone, onError: restoreFailed }));
+    const run = (allowMissingPhotos = false): void =>
+      actions.restoreFile.mutate({ file: picked, allowMissingPhotos }, { ...restoreDone, onError: failedOr(() => run(true)) });
+    confirmRestore(null, `the file “${picked.name}”`, () => run());
   };
   const undo = () =>
     confirmAction(
       'Undo the restore?',
       `This puts back the recovery copy (${meta.recoveryLabel ?? 'data before the restore'}, ${formatTimestamp(meta.recoveryAt ?? '')}). The data on this phone now becomes the new recovery copy, so this can be undone too.`,
       'Undo restore',
-      () =>
-        actions.undo.mutate(undefined, {
-          onSuccess: (r) => notify('Previous data put back', restoredMessage(r)),
-          onError: restoreFailed,
-        }),
+      () => {
+        const run = (allowMissingPhotos = false): void =>
+          actions.undo.mutate(
+            { allowMissingPhotos },
+            { onSuccess: (r) => notify('Previous data put back', restoredMessage(r)), onError: failedOr(() => run(true)) },
+          );
+        run();
+      },
       true,
     );
 
@@ -239,7 +255,8 @@ export default function BackupScreen() {
       <Card style={{ gap: space.sm }}>
         <Text variant="label" tone="muted">
           Restore a backup file saved with Export data → Full backup file. It is opened and checked (SQLite integrity, data version)
-          before anything on this phone changes.
+          before anything on this phone changes. Receipt photos are not inside the file: they are taken from this phone or, when
+          signed in, from your Google Drive backups.
         </Text>
         <Button kind="secondary" icon="folder_open" label="Restore from a file" disabled={busy} onPress={restoreFromFile} />
       </Card>
