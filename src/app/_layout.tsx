@@ -118,6 +118,8 @@ export default function RootLayout() {
                 <Stack.Screen name="company/obligation-edit" options={{ ...modal, title: 'Obligation' }} />
                 <Stack.Screen name="company/reserve-edit" options={{ ...modal, title: 'Reserve' }} />
                 <Stack.Screen name="company/approve" options={{ ...modal, title: 'Record approval' }} />
+                <Stack.Screen name="backup/index" options={{ title: 'Backups & restore' }} />
+                <Stack.Screen name="backup/export" options={{ title: 'Export data' }} />
               </Stack>
             </QueryClientProvider>
           </SQLiteProvider>

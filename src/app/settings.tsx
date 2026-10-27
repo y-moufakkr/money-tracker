@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Alert, ScrollView, View } from 'react-native';
 
 import { AccountRow } from '@/components/account-row';
+import { BackupSection } from '@/components/backup';
 import { DATABASE_NAME } from '@/db/expo';
 import { SCHEMA_VERSION } from '@/db/migrations';
 import { todayISO } from '@/domain/dates';
@@ -12,7 +13,7 @@ import { updateCompany, type CompanyInput } from '@/services/accounts';
 import { notify } from '@/lib/confirm';
 import { setRate } from '@/services/fx';
 import { ChipGroup, Field, TextField } from '@/ui/fields';
-import { Banner, Button, Card, Chip, Divider, ListItem, Row, SectionHeader, Text } from '@/ui/primitives';
+import { Button, Card, Chip, Divider, ListItem, Row, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 import type { Company, TvaMode } from '@/domain/types';
 
@@ -169,19 +170,14 @@ export default function SettingsScreen() {
         )}
       </Card>
 
-      <SectionHeader title="Backup & sync" />
-      <Card style={{ gap: space.sm }}>
-        <ListItem icon="sync" iconColor={c.textMuted} title="Sync to Google Drive" subtitle="Coming in Phase 4 — private app folder, manual backup & restore" />
-        <Banner tone="warning">
-          Until then your data lives only on this phone. Uninstalling the app or clearing its storage deletes it.
-        </Banner>
-      </Card>
+      <SectionHeader title="Backup & export" />
+      <BackupSection />
 
       <SectionHeader title="About" />
       <Card style={{ gap: 4 }}>
         <Text variant="label" tone="muted">Database: {DATABASE_NAME} · schema v{SCHEMA_VERSION}</Text>
         <Text variant="label" tone="muted">Timezone: Africa/Casablanca · Base currency: MAD</Text>
-        <Text variant="label" tone="muted">All data is stored offline on this device.</Text>
+        <Text variant="label" tone="muted">All data is stored offline on this device. Google Drive holds backup copies only.</Text>
       </Card>
     </ScrollView>
   );
