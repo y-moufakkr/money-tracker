@@ -8,6 +8,7 @@ import { formatMoney } from '@/domain/money';
 import type { TransactionKind } from '@/domain/types';
 import { useTransactions } from '@/hooks/data';
 import { useUiStore } from '@/hooks/ui-store';
+import { CLEAR_DRILL, decodeDrill, type DrillParams } from '@/lib/drill';
 import { TextField } from '@/ui/fields';
 import { Icon } from '@/ui/icon';
 import { TabScreen } from '@/ui/layout';
@@ -26,19 +27,19 @@ const PAGE = 100;
 
 export default function TransactionsScreen() {
   const c = useColors();
-  const params = useLocalSearchParams<{ categoryId?: string; categoryName?: string; from?: string; to?: string }>();
+  const params = useLocalSearchParams<DrillParams>();
   const period = useUiStore((s) => s.transactionsPeriod);
   const setPeriod = useUiStore((s) => s.setTransactionsPeriod);
   const [kind, setKind] = useState<TransactionKind | 'all'>('all');
   const [search, setSearch] = useState('');
   const [limit, setLimit] = useState(PAGE);
 
-  const drill = params.categoryId ? { categoryId: params.categoryId, from: params.from, to: params.to } : null;
-  const range = drill ? { from: drill.from, to: drill.to } : period === 'all' ? {} : presetRange(period);
+  const drill = decodeDrill(params);
+  const range = drill ? {} : period === 'all' ? {} : presetRange(period);
   const { data, isLoading, refetch, isRefetching } = useTransactions({
     ...range,
-    categoryId: drill?.categoryId,
-    kinds: kind === 'all' ? undefined : [kind],
+    ...drill,
+    kinds: kind === 'all' ? drill?.kinds : [kind],
     search: search.trim() || undefined,
     limit,
   });
@@ -64,10 +65,10 @@ export default function TransactionsScreen() {
         <Card tone="primary" style={{ marginBottom: space.md }}>
           <Row style={{ justifyContent: 'space-between' }}>
             <Text variant="label" color={c.primary} style={{ flex: 1 }}>
-              {params.categoryName ?? 'Category'}
+              {params.label || 'Filtered'}
               {drill.from && drill.to ? ` · ${formatDateLabel(drill.from)} – ${formatDateLabel(drill.to)}` : ''}
             </Text>
-            <Button compact kind="ghost" label="Clear" onPress={() => router.setParams({ categoryId: undefined, categoryName: undefined, from: undefined, to: undefined })} />
+            <Button compact kind="ghost" label="Clear" onPress={() => router.setParams(CLEAR_DRILL)} />
           </Row>
         </Card>
       ) : (

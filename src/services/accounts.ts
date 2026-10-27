@@ -199,7 +199,11 @@ export async function setAccountArchived(db: Db, id: string, archived: boolean, 
   if (archived && balanceMinor !== 0) {
     throw new LedgerError('Move or spend the remaining balance before archiving — archived locations are not counted.');
   }
-  await db.run('UPDATE accounts SET is_archived = ?, updated_at = ? WHERE id = ?', [archived ? 1 : 0, nowISO(), id]);
+  await db.transaction(async (tx) => {
+    await tx.run('UPDATE accounts SET is_archived = ?, updated_at = ? WHERE id = ?', [archived ? 1 : 0, nowISO(), id]);
+    // An empty, archived location cannot back a goal: release its reservations.
+    if (archived) await tx.run('DELETE FROM goal_allocations WHERE account_id = ?', [id]);
+  });
 }
 
 /** Hard delete is only allowed for locations that were never used. */
@@ -214,6 +218,7 @@ export async function deleteAccount(db: Db, id: string): Promise<void> {
       throw new LedgerError('This location has history. Archive it instead of deleting it.');
     }
     await tx.run('DELETE FROM payment_instruments WHERE account_id = ?', [id]);
+    await tx.run('DELETE FROM goal_allocations WHERE account_id = ?', [id]);
     await tx.run('DELETE FROM accounts WHERE id = ?', [id]);
   });
 }

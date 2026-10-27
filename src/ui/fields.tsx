@@ -253,3 +253,68 @@ const styles = StyleSheet.create({
   chipGroup: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   toggleRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.sm },
 });
+
+/**
+ * A single date chip that opens the native picker. On web (UI checks only)
+ * it falls back to a YYYY-MM-DD text input.
+ */
+export function DateButton({
+  value,
+  onChange,
+  label,
+  minimumDate,
+  maximumDate = todayISO(),
+}: {
+  value: string;
+  onChange: (iso: string) => void;
+  label?: string;
+  minimumDate?: string;
+  maximumDate?: string;
+}) {
+  const c = useColors();
+  const [iosOpen, setIosOpen] = useState(false);
+  const [text, setText] = useState(value);
+  if (Platform.OS === 'web') {
+    return (
+      <TextInput
+        value={text}
+        onChangeText={(t) => {
+          setText(t);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(t) && t <= maximumDate && (!minimumDate || t >= minimumDate)) onChange(t);
+        }}
+        accessibilityLabel={label ?? 'Date'}
+        placeholder="YYYY-MM-DD"
+        placeholderTextColor={c.textFaint}
+        style={[styles.input, { color: c.text, borderColor: c.border, backgroundColor: c.surface, minWidth: 130 }]}
+      />
+    );
+  }
+  const open = () => {
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        value: isoToLocalDate(value),
+        mode: 'date',
+        maximumDate: isoToLocalDate(maximumDate),
+        minimumDate: minimumDate ? isoToLocalDate(minimumDate) : undefined,
+        onChange: (event, date) => {
+          if (event.type === 'set' && date) onChange(localDateToISO(date));
+        },
+      });
+    } else setIosOpen((v) => !v);
+  };
+  return (
+    <View>
+      <Chip label={label ? `${label}: ${formatDateLabel(value)}` : formatDateLabel(value)} icon="calendar_today" selected onPress={open} />
+      {iosOpen && Platform.OS !== 'android' && (
+        <DateTimePicker
+          value={isoToLocalDate(value)}
+          mode="date"
+          display="inline"
+          maximumDate={isoToLocalDate(maximumDate)}
+          minimumDate={minimumDate ? isoToLocalDate(minimumDate) : undefined}
+          onChange={(_, d) => d && onChange(localDateToISO(d))}
+        />
+      )}
+    </View>
+  );
+}

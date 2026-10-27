@@ -171,6 +171,15 @@ describe('product price history', () => {
     expect(p.stats.averageDaysBetween).toBe(7);
   });
 
+  it('averages per merchant by quantity, like the overall average', async () => {
+    await spend(124, { merchantName: 'BIM', items: [item('Chicken', 124, { quantityMilli: 2000, unit: 'kg' })] });
+    await spend(34, { merchantName: 'BIM', items: [item('Chicken', 34, { quantityMilli: 500_000, unit: 'g' })] });
+    const [{ id }] = await db.all<{ id: string }>('SELECT id FROM products');
+    const g = (await productDetail(db, id))!.stats.groups[0];
+    expect(g.averagePriceMinor).toBe(DH(63.2));
+    expect(g.byMerchant[0].averagePriceMinor).toBe(DH(63.2));
+  });
+
   it('uses a recorded unit price when no total was entered', () => {
     const stats = productStats([
       {

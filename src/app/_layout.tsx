@@ -93,6 +93,18 @@ export default function RootLayout() {
                 <Stack.Screen name="accounts/pick" options={{ ...modal, title: 'Choose a location' }} />
                 <Stack.Screen name="transactions/[id]" options={{ title: 'Transaction' }} />
                 <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+                <Stack.Screen name="goals/edit" options={{ ...modal, title: 'Goal' }} />
+                <Stack.Screen name="goals/[id]" options={{ title: 'Goal' }} />
+                <Stack.Screen name="budgets/index" options={{ title: 'Budgets' }} />
+                <Stack.Screen name="budgets/edit" options={{ ...modal, title: 'Budget' }} />
+                <Stack.Screen name="products/index" options={{ title: 'Products & prices' }} />
+                <Stack.Screen name="products/[id]" options={{ title: 'Product' }} />
+                <Stack.Screen name="merchants/index" options={{ title: 'Merchants' }} />
+                <Stack.Screen name="merchants/[id]" options={{ title: 'Merchant' }} />
+                <Stack.Screen name="categories/index" options={{ title: 'Categories' }} />
+                <Stack.Screen name="categories/edit" options={{ ...modal, title: 'Category' }} />
+                <Stack.Screen name="tags" options={{ title: 'Tags' }} />
+                <Stack.Screen name="trends" options={{ title: 'Balance trends' }} />
               </Stack>
             </QueryClientProvider>
           </SQLiteProvider>

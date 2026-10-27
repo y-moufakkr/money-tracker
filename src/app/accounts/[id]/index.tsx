@@ -5,7 +5,7 @@ import { TransactionRow } from '@/components/transaction-row';
 import { formatDateLabel } from '@/domain/dates';
 import { formatMoney } from '@/domain/money';
 import { accountKindLabel } from '@/domain/types';
-import { useAccount, useAccountLedger, useInstruments, useLedgerMutation, useReconciliations, useTransactions } from '@/hooks/data';
+import { useAccount, useAccountLedger, useGoals, useInstruments, useLedgerMutation, useReconciliations, useTransactions } from '@/hooks/data';
 import { closeScreen } from '@/lib/navigation';
 import { deleteAccount, setAccountArchived, setInstrumentArchived } from '@/services/accounts';
 import { recheckReconciliation } from '@/services/reconciliation';
@@ -26,6 +26,9 @@ export default function AccountScreen() {
   const txs = useTransactions({ accountId: id, limit: 200 });
   const cards = (useInstruments().data ?? []).filter((i) => i.accountId === id);
   const recs = useReconciliations(id).data ?? [];
+  const reservedFor = (useGoals().data ?? []).flatMap((g) =>
+    g.allocations.filter((a) => a.accountId === id).map((a) => ({ ...a, goal: g.name })),
+  );
 
   const archive = useLedgerMutation((db, archived: boolean) => setAccountArchived(db, id, archived, account?.balanceMinor ?? 0));
   const remove = useLedgerMutation((db, _: void) => deleteAccount(db, id));
@@ -74,6 +77,37 @@ export default function AccountScreen() {
           </Text>
         </Card>
 
+        {reservedFor.length > 0 && (() => {
+          const reserved = reservedFor.reduce((s, a) => s + a.amountMinor, 0);
+          const free = account.balanceMinor - reserved;
+          return (
+            <Card style={{ marginTop: space.sm, gap: 6 }}>
+              <Row style={{ justifyContent: 'space-between' }}>
+                <Text variant="label" tone="muted">Reserved for goals</Text>
+                <Amount minor={reserved} currency={account.currency} variant="label" />
+              </Row>
+              {reservedFor.map((a) => (
+                <Row key={a.goalId} style={{ justifyContent: 'space-between' }}>
+                  <Text variant="caption" color={c.primary} onPress={() => router.push(`/goals/${a.goalId}`)}>
+                    {a.goal}
+                  </Text>
+                  <Text variant="caption" tone="muted">{formatMoney(a.amountMinor, account.currency)}</Text>
+                </Row>
+              ))}
+              <Divider />
+              <Row style={{ justifyContent: 'space-between' }}>
+                <Text variant="label" tone="muted">Unallocated</Text>
+                <Amount minor={free} currency={account.currency} variant="label" colored="negative-only" />
+              </Row>
+              {free < 0 && (
+                <Text variant="caption" color={c.warning}>
+                  More is reserved than this account holds. Goals only count what is really here.
+                </Text>
+              )}
+            </Card>
+          );
+        })()}
+
         {!account.isArchived && (
           <Row style={{ marginTop: space.md, flexWrap: 'wrap' }}>
             <Button compact kind="secondary" icon="remove" label="Expense" onPress={() => router.push(`/entry/expense?account=${id}`)} />
@@ -82,6 +116,7 @@ export default function AccountScreen() {
             )}
             <Button compact kind="secondary" icon="swap_horiz" label={isCredit ? 'Pay off' : 'Transfer'} onPress={() => router.push(isCredit ? `/entry/transfer?to=${id}` : `/entry/transfer?from=${id}`)} />
             <Button compact kind="secondary" icon="balance" label="Check balance" onPress={() => router.push(`/accounts/${id}/reconcile`)} />
+            <Button compact kind="secondary" icon="show_chart" label="Trend" onPress={() => router.push(`/trends?account=${id}`)} />
           </Row>
         )}
 

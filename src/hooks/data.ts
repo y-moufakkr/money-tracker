@@ -6,7 +6,12 @@ import type { Db } from '@/db/types';
 import type { DateRange } from '@/domain/dates';
 import type { Account, CategoryKind, Ownership } from '@/domain/types';
 import { getAccount, listAccounts, listCompanies, listInstruments } from '@/services/accounts';
-import { accountBalance, accountBalances, accountLedger, moneySummary } from '@/services/balances';
+import { listMerchants, listProducts, loadExpenseFacts, merchantDetail, productDetail } from '@/services/analytics';
+import { accountBalance, accountBalances, accountLedger, accountReservations, balanceHistory, moneySummary } from '@/services/balances';
+import { budgetStatuses, getBudget } from '@/services/budgets';
+import { listAllCategories, listTags } from '@/services/catalog';
+import { getGoal, listGoals } from '@/services/goals';
+import { insights } from '@/services/insights';
 import { listRates } from '@/services/fx';
 import {
   getSetting,
@@ -145,6 +150,80 @@ export function useRates() {
 export function useSetting(key: string) {
   const db = useDb();
   return useQuery({ queryKey: [LEDGER, 'setting', key], queryFn: () => getSetting(db, key) });
+}
+
+export function useAllCategories(kind: CategoryKind) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'all-categories', kind], queryFn: () => listAllCategories(db, kind) });
+}
+
+export function useTags(includeArchived = false) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'tags', includeArchived], queryFn: () => listTags(db, { includeArchived }) });
+}
+
+export function useExpenseFacts(range: DateRange) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'facts', range.from, range.to], queryFn: () => loadExpenseFacts(db, range) });
+}
+
+export function useBudgetStatuses() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'budget-statuses'], queryFn: () => budgetStatuses(db) });
+}
+
+export function useBudget(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'budget', id], queryFn: () => getBudget(db, id!), enabled: !!id });
+}
+
+export function useGoals() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'goals'], queryFn: () => listGoals(db) });
+}
+
+export function useGoal(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'goal', id], queryFn: () => getGoal(db, id!), enabled: !!id });
+}
+
+export function useAccountReservations() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'reservations'], queryFn: () => accountReservations(db) });
+}
+
+export function useInsights() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'insights'], queryFn: () => insights(db) });
+}
+
+export function useBalanceHistory(dates: string[]) {
+  const db = useDb();
+  return useQuery({
+    queryKey: [LEDGER, 'balance-history', dates],
+    queryFn: () => balanceHistory(db, dates),
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useProducts(search: string) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'product-list', search], queryFn: () => listProducts(db, search), placeholderData: (prev) => prev });
+}
+
+export function useProduct(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'product', id], queryFn: () => productDetail(db, id!), enabled: !!id });
+}
+
+export function useMerchants(search: string) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'merchant-list', search], queryFn: () => listMerchants(db, search), placeholderData: (prev) => prev });
+}
+
+export function useMerchant(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'merchant', id], queryFn: () => merchantDetail(db, id!), enabled: !!id });
 }
 
 /** Runs a write against the DB and refreshes every ledger-derived query on success. */

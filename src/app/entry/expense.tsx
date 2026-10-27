@@ -4,6 +4,7 @@ import { Alert, View } from 'react-native';
 
 import { CategoryPicker, decodeSource, encodeSource, MerchantField, SourcePicker, type Source } from '@/components/entry-pickers';
 import { draftFromItem, ItemsEditor, parseDraft, type ItemDraft } from '@/components/items-editor';
+import { TagPicker } from '@/components/tag-picker';
 import { todayISO } from '@/domain/dates';
 import { BASE_CURRENCY, minorToInput, parseAmount } from '@/domain/money';
 import type { AccountWithBalance, Category, PaymentInstrument } from '@/domain/types';
@@ -24,6 +25,7 @@ type Initial = {
   date: string;
   note: string;
   items: ItemDraft[];
+  tagIds: string[];
 };
 
 /** Loads everything the form needs, then mounts the form with its initial values. */
@@ -59,6 +61,7 @@ export default function ExpenseScreen() {
       date: t.date,
       note: t.note ?? '',
       items: t.items.map((i) => draftFromItem(i, t.currency)),
+      tagIds: t.tags.map((x) => x.id),
     };
   } else {
     const fromParam = params.account ? decodeSource(`acct:${params.account}`, accounts, cards) : null;
@@ -72,6 +75,7 @@ export default function ExpenseScreen() {
       date: todayISO(),
       note: '',
       items: [],
+      tagIds: [],
     };
   }
 
@@ -108,7 +112,8 @@ function ExpenseForm({
   const [date, setDate] = useState(initial.date);
   const [note, setNote] = useState(initial.note);
   const [items, setItems] = useState(initial.items);
-  const [showMore, setShowMore] = useState(!!initial.note || initial.items.length > 0);
+  const [tagIds, setTagIds] = useState(initial.tagIds);
+  const [showMore, setShowMore] = useState(!!initial.note || initial.items.length > 0 || initial.tagIds.length > 0);
 
   const save = useLedgerMutation(async (db, v: { input: ExpenseInput; another: boolean }) => {
     const txId = await saveExpense(db, v.input, id);
@@ -146,6 +151,7 @@ function ExpenseForm({
       categoryId,
       merchantName: merchant,
       note,
+      tagIds,
       // Rows left completely blank are ignored rather than rejected.
       items: parsedItems.filter((p) => p.input).map((p) => p.input!),
     };
@@ -160,6 +166,7 @@ function ExpenseForm({
             setCategoryTouched(false);
             setNote('');
             setItems([]);
+            setTagIds([]);
           } else closeScreen();
         },
         onError: (e) => Alert.alert('Could not save', e.message),
@@ -206,9 +213,10 @@ function ExpenseForm({
         <DateField value={date} onChange={setDate} />
 
         {!showMore ? (
-          <Button kind="ghost" icon="list_alt" label="Add items, note…" onPress={() => setShowMore(true)} />
+          <Button kind="ghost" icon="list_alt" label="Add tags, items, note…" onPress={() => setShowMore(true)} />
         ) : (
           <View>
+            <TagPicker value={tagIds} onChange={setTagIds} label="Tags (optional)" />
             <TextField label="Note (optional)" value={note} onChangeText={setNote} placeholder="Anything to remember" multiline />
             <SectionHeader title="Items (optional)" />
             <Text variant="caption" tone="muted" style={{ marginBottom: space.sm }}>

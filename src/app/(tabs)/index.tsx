@@ -1,11 +1,15 @@
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { BudgetCard } from '@/components/budget-card';
 import { BarRow } from '@/components/breakdown';
+import { InsightList } from '@/components/insight-list';
 import { TransactionRow } from '@/components/transaction-row';
 import { formatMonthLabel, presetRange, todayISO } from '@/domain/dates';
 import { formatMoney } from '@/domain/money';
-import { useMoneySummary, usePeriodSummary, useTransactions } from '@/hooks/data';
+import { useBudgetStatuses, useInsights, useMoneySummary, usePeriodSummary, useTransactions } from '@/hooks/data';
+import { openTransactions } from '@/lib/drill';
+import { NO_CATEGORY } from '@/services/queries';
 import { Icon } from '@/ui/icon';
 import { TabScreen } from '@/ui/layout';
 import { Amount, Button, Card, Divider, EmptyState, IconButton, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
@@ -30,12 +34,16 @@ export default function HomeScreen() {
   const summary = useMoneySummary();
   const period = usePeriodSummary(month);
   const recent = useTransactions({ limit: 6 });
+  const insights = useInsights();
+  const budgets = useBudgetStatuses();
 
   const refreshing = summary.isRefetching || period.isRefetching;
   const refresh = () => {
     summary.refetch();
     period.refetch();
     recent.refetch();
+    insights.refetch();
+    budgets.refetch();
   };
 
   if (summary.isLoading || period.isLoading) {
@@ -84,7 +92,7 @@ export default function HomeScreen() {
             </Row>
             <Amount minor={p.liquid} variant="display" />
             <Text variant="caption" tone="muted">
-              Available {formatMoney(p.available)}
+              {p.reserved > 0 ? `Reserved for goals ${formatMoney(p.reserved)} · Unallocated ${formatMoney(p.available)}` : `Available ${formatMoney(p.available)}`}
               {p.liabilities > 0 ? ` · Owed ${formatMoney(p.liabilities)}` : ''}
               {p.unconverted.length > 0 ? ` · ${p.unconverted.length} foreign location(s) not counted` : ''}
             </Text>
@@ -118,12 +126,35 @@ export default function HomeScreen() {
             </Text>
           )}
 
+          {(budgets.data ?? []).length > 0 && (
+            <>
+              <SectionHeader title="Budget" action={{ label: 'All budgets', onPress: () => router.push('/budgets') }} />
+              <BudgetCard status={budgets.data![0]} />
+            </>
+          )}
+
+          {(insights.data ?? []).length > 0 && (
+            <>
+              <SectionHeader title="Insights" action={{ label: 'More', onPress: () => router.push('/analytics') }} />
+              <InsightList insights={insights.data!} limit={3} />
+            </>
+          )}
+
           {topCats.length > 0 && (
             <>
               <SectionHeader title="Top spending" />
               <Card style={{ gap: space.md }}>
                 {topCats.map((cat) => (
-                  <Pressable key={cat.categoryId ?? 'none'} onPress={() => router.push('/analytics')}>
+                  <Pressable
+                    key={cat.categoryId ?? 'none'}
+                    accessibilityRole="button"
+                    accessibilityHint="Shows the transactions in this category"
+                    onPress={() =>
+                      openTransactions(
+                        { ...month, kinds: ['expense'], ownership: 'personal', categoryId: cat.categoryId ?? NO_CATEGORY },
+                        cat.name,
+                      )
+                    }>
                     <BarRow label={cat.name} minor={cat.totalMinor} max={topCats[0].totalMinor} color={cat.color ?? c.primary} />
                   </Pressable>
                 ))}

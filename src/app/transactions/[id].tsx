@@ -4,7 +4,7 @@ import { Alert, ScrollView, View } from 'react-native';
 import { formatDateLabel } from '@/domain/dates';
 import { formatMoney, formatQuantity } from '@/domain/money';
 import { transferClassLabel } from '@/domain/types';
-import { useLedgerMutation, useTransaction } from '@/hooks/data';
+import { useLedgerMutation, useTags, useTransaction } from '@/hooks/data';
 import { closeScreen } from '@/lib/navigation';
 import { deleteTransaction } from '@/services/ledger';
 import { Amount, Banner, Button, Card, Divider, EmptyState, IconBadge, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
@@ -26,6 +26,7 @@ export default function TransactionScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { data: t, isLoading } = useTransaction(id);
   const remove = useLedgerMutation((db, txId: string) => deleteTransaction(db, txId));
+  const tagNames = new Map((useTags(true).data ?? []).map((g) => [g.id, g.name]));
 
   if (isLoading) return <Loading />;
   if (!t) return <EmptyState icon="error" title="Transaction not found" message="It may have been deleted." />;
@@ -98,6 +99,7 @@ export default function TransactionScreen() {
               {t.merchantName && <Line label={t.kind === 'income' ? 'From' : 'Merchant'}>{t.merchantName}</Line>}
             </>
           )}
+          {t.tags.length > 0 && <Line label="Tags">{t.tags.map((g) => `#${g.name}`).join(' ')}</Line>}
           {t.note && <Line label="Note">{t.note}</Line>}
         </Card>
 
@@ -124,7 +126,12 @@ export default function TransactionScreen() {
                   {idx > 0 && <Divider inset={16} />}
                   <Row style={{ padding: space.md, justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <View style={{ flex: 1 }}>
-                      <Text variant="bodyStrong">{i.name}</Text>
+                      <Text
+                        variant="bodyStrong"
+                        color={i.productId ? c.primary : undefined}
+                        onPress={i.productId ? () => router.push(`/products/${i.productId}`) : undefined}>
+                        {i.name}
+                      </Text>
                       <Text variant="caption" tone="muted">
                         {[
                           i.lineKind !== 'product' ? i.lineKind : null,
@@ -133,6 +140,7 @@ export default function TransactionScreen() {
                         ]
                           .filter(Boolean)
                           .join(' ')}
+                        {i.tagIds.length > 0 ? ` · ${i.tagIds.map((id) => `#${tagNames.get(id) ?? '?'}`).join(' ')}` : ''}
                       </Text>
                     </View>
                     <Text color={i.lineKind === 'discount' ? c.positive : undefined}>

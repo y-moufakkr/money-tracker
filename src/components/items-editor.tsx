@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 
 import { formatMoney, formatQuantity, lineTotal, minorToInput, parseAmount, parseQuantity } from '@/domain/money';
 import type { ItemLineKind, PurchaseItem, PurchaseItemInput } from '@/domain/types';
 import { useProductSuggestions } from '@/hooks/data';
+import { TagPicker } from './tag-picker';
 import { ChipGroup } from '@/ui/fields';
 import { Button, Chip, IconButton, Row, Text } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
@@ -15,12 +17,13 @@ export type ItemDraft = {
   unit: string;
   unitPrice: string;
   total: string;
+  tagIds: string[];
 };
 
 let seq = 0;
 export function newItemDraft(lineKind: ItemLineKind = 'product', name = '', total = ''): ItemDraft {
   seq += 1;
-  return { key: `item-${seq}`, lineKind, name, qty: '', unit: '', unitPrice: '', total };
+  return { key: `item-${seq}`, lineKind, name, qty: '', unit: '', unitPrice: '', total, tagIds: [] };
 }
 
 export function draftFromItem(i: PurchaseItem, currency: string): ItemDraft {
@@ -30,6 +33,7 @@ export function draftFromItem(i: PurchaseItem, currency: string): ItemDraft {
     unit: i.unit ?? '',
     unitPrice: i.unitPriceMinor === null ? '' : minorToInput(i.unitPriceMinor, currency),
     total: i.totalMinor === null ? '' : minorToInput(i.totalMinor, currency),
+    tagIds: i.tagIds,
   };
 }
 
@@ -57,6 +61,7 @@ export function parseDraft(d: ItemDraft, currency: string): Parsed {
       unit: d.unit.trim() || null,
       unitPriceMinor: unitPrice,
       totalMinor: derived,
+      tagIds: d.tagIds,
     },
     error: null,
     effectiveTotal: derived,
@@ -91,6 +96,7 @@ function ItemCard({
   const c = useColors();
   const parsed = parseDraft(d, currency);
   const isProduct = d.lineKind === 'product';
+  const [tagging, setTagging] = useState(d.tagIds.length > 0);
   const suggestions = useProductSuggestions(d.name, isProduct && d.name.length >= 1).data ?? [];
   const showSuggestions =
     isProduct && d.name.length > 0 && suggestions.length > 0 && !suggestions.some((s) => s.name.toLowerCase() === d.name.trim().toLowerCase());
@@ -184,6 +190,13 @@ function ItemCard({
           placeholderTextColor={c.textFaint}
           style={input}
         />
+      )}
+      {tagging ? (
+        <TagPicker compact value={d.tagIds} onChange={(tagIds) => onChange({ ...d, tagIds })} />
+      ) : (
+        <Text variant="caption" color={c.primary} onPress={() => setTagging(true)}>
+          + Tag this item
+        </Text>
       )}
       {parsed.error && d.name.trim() !== '' && (
         <Text variant="caption" color={c.negative}>

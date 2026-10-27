@@ -13,10 +13,14 @@ import { Amount, Banner, Button, Card, Divider, EmptyState, IconButton, Loading,
 import { TabScreen } from '@/ui/layout';
 import { radius, SERIES, space, useColors } from '@/ui/theme';
 
-function Tile({ label, minor, tint, hint }: { label: string; minor: number; tint?: string; hint?: string }) {
+function Tile({ label, minor, tint, hint, onPress }: { label: string; minor: number; tint?: string; hint?: string; onPress?: () => void }) {
   const c = useColors();
   return (
-    <View style={[styles.tile, { backgroundColor: c.surface, borderColor: c.border }]}>
+    <Pressable
+      disabled={!onPress}
+      onPress={onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      style={[styles.tile, { backgroundColor: c.surface, borderColor: c.border }]}>
       <Text variant="caption" tone="muted">
         {label}
       </Text>
@@ -26,7 +30,7 @@ function Tile({ label, minor, tint, hint }: { label: string; minor: number; tint
           {hint}
         </Text>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -123,9 +127,9 @@ export default function MoneyScreen() {
             <Row style={{ justifyContent: 'space-between', marginTop: space.sm }}>
               <View>
                 <Text variant="caption" tone="muted">
-                  Available to spend
+                  {p.reservationsApply ? 'Unallocated (not reserved)' : 'Available'}
                 </Text>
-                <Amount minor={p.available} variant="bodyStrong" />
+                <Amount minor={p.available} variant="bodyStrong" colored="negative-only" />
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text variant="caption" tone="muted">
@@ -147,8 +151,28 @@ export default function MoneyScreen() {
               tint={p.liabilities > 0 ? c.negative : undefined}
               hint={p.liabilities > 0 ? 'Credit cards' : undefined}
             />
-            <Tile label="Reserved for goals" minor={p.reserved} hint="Goals arrive in Phase 2" />
+            <Tile
+              label="Reserved for goals"
+              minor={p.reserved}
+              hint={p.reservationsApply ? 'Part of the total above, not extra' : 'Reservations are only tracked for today'}
+              onPress={() => router.push('/goals')}
+            />
           </View>
+          {p.reservationsApply && (
+            <Text variant="caption" tone="muted" style={{ marginTop: space.sm }}>
+              Total {formatMoney(p.liquid)} = reserved for goals {formatMoney(p.reserved)} + unallocated {formatMoney(p.available)}. Bills
+              reservations come with recurring payments (Phase 5).
+            </Text>
+          )}
+          {p.overAllocated.length > 0 && (
+            <View style={{ marginTop: space.md }}>
+              <Banner tone="warning" title="Some reservations are not covered">
+                {p.overAllocated
+                  .map((o) => `${o.account.name}: ${formatMoney(o.allocatedMinor, o.account.currency)} reserved, but only ${formatMoney(o.allocatedMinor - o.shortMinor, o.account.currency)} is there.`)
+                  .join('\n')}
+              </Banner>
+            </View>
+          )}
 
           {p.unconverted.length > 0 && (
             <View style={{ marginTop: space.md }}>
@@ -163,6 +187,8 @@ export default function MoneyScreen() {
             <QuickAction icon="remove" label="Expense" onPress={() => router.push('/entry/expense')} />
             <QuickAction icon="add" label="Income" onPress={() => router.push('/entry/income')} />
             <QuickAction icon="balance" label="Check balance" onPress={() => router.push('/accounts/pick?next=reconcile')} />
+            <QuickAction icon="show_chart" label="Trends" onPress={() => router.push('/trends')} />
+            <QuickAction icon="flag" label="Goals" onPress={() => router.push('/goals')} />
             <QuickAction icon="add_card" label="Add location" onPress={() => router.push('/accounts/new')} />
           </ScrollView>
 

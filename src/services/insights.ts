@@ -10,7 +10,7 @@ import { formatNormalisedQuantity } from '@/domain/units';
 import { applyFilter, breakdown, loadExpenseFacts, loadProductLines, productStats, type ExpenseFacts } from './analytics';
 import { budgetStatuses, type BudgetStatus } from './budgets';
 import { listGoals, type GoalProgress } from './goals';
-import type { TransactionFilter } from './queries';
+import { NO_CATEGORY, type TransactionFilter } from './queries';
 
 export type Insight = {
   id: string;
@@ -51,7 +51,10 @@ export function spendingInsights(cur: ExpenseFacts, prev: ExpenseFacts, days: nu
       id: `top-${row.key}`,
       icon: row.icon ?? 'category',
       tone: 'info',
-      title: `You spent ${formatMoney(row.totalMinor)} on ${row.label} this month`,
+      title:
+        row.key === NO_CATEGORY
+          ? `${formatMoney(row.totalMinor)} of this month's spending has no category`
+          : `You spent ${formatMoney(row.totalMinor)} on ${row.label} this month`,
       calculation: `Sum of ${row.count} expense${row.count > 1 ? 's' : ''} in ${row.label}${row.drill?.includeSubcategories ? ' and its subcategories' : ''}, ${range(from, to)}. That is ${pct(row.totalMinor / now.totalMinor)} of this month's ${formatMoney(now.totalMinor)}.`,
       drill: row.drill ? { ...drillBase, ...row.drill } : undefined,
     });

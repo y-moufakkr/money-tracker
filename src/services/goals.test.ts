@@ -2,7 +2,7 @@ import type { Db } from '@/db/types';
 import { addDays, addMonths } from '@/domain/dates';
 import { createTestDb } from '@/test/node-db';
 import { businessAccount, count, DH, personalAccount, today } from '@/test/fixtures';
-import { createAccount, setAccountArchived } from './accounts';
+import { createAccount, deleteAccount, setAccountArchived } from './accounts';
 import { accountBalance, moneySummary, reserveAllocations } from './balances';
 import { createGoal, deleteGoal, getGoal, goalPlan, listGoals, OverAllocationError, setAllocation } from './goals';
 import { saveExpense, saveTransfer } from './ledger';
@@ -151,6 +151,20 @@ describe('over-allocation protection', () => {
     expect(r.backedMinor).toBe(2);
     expect(r.overAllocatedMinor).toBe(1);
     expect(r.unallocatedMinor).toBe(0);
+  });
+});
+
+describe('reservations and location lifecycle', () => {
+  it('archiving or deleting an empty location releases its reservations', async () => {
+    const savings = await personalAccount(db, 'Savings', 'savings', 0);
+    const g = await goal('Holiday', 5000);
+    await setAllocation(db, { goalId: g, accountId: savings, amountMinor: DH(100), allowOverAllocation: true });
+    await setAccountArchived(db, savings, true, 0);
+    expect(await count(db, 'SELECT COUNT(*) AS n FROM goal_allocations')).toBe(0);
+    await setAccountArchived(db, savings, false, 0);
+    await setAllocation(db, { goalId: g, accountId: savings, amountMinor: DH(100), allowOverAllocation: true });
+    await deleteAccount(db, savings);
+    expect(await count(db, 'SELECT COUNT(*) AS n FROM goal_allocations')).toBe(0);
   });
 });
 

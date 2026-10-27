@@ -62,6 +62,19 @@ export default function SettingsScreen() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, paddingBottom: 64 }} keyboardShouldPersistTaps="handled">
+      <SectionHeader title="Organise" />
+      <Card padded={false}>
+        <ListItem icon="category" iconColor={c.primary} title="Categories" subtitle="Subcategories, essential spending, merge" chevron onPress={() => router.push('/categories')} />
+        <Divider inset={68} />
+        <ListItem icon="sell" iconColor={c.primary} title="Tags" chevron onPress={() => router.push('/tags')} />
+        <Divider inset={68} />
+        <ListItem icon="store" iconColor={c.primary} title="Merchants" chevron onPress={() => router.push('/merchants')} />
+        <Divider inset={68} />
+        <ListItem icon="shopping_basket" iconColor={c.primary} title="Products & prices" chevron onPress={() => router.push('/products')} />
+        <Divider inset={68} />
+        <ListItem icon="savings" iconColor={c.primary} title="Budgets" chevron onPress={() => router.push('/budgets')} />
+      </Card>
+
       <SectionHeader title="Companies" />
       {companies.length === 0 ? (
         <Card>

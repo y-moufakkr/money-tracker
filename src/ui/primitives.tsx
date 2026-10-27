@@ -321,8 +321,11 @@ export function Chip({
   icon,
   color,
   onLongPress,
+  accessibilityLabel,
 }: {
   label: string;
+  /** Required for icon-only chips (empty label). */
+  accessibilityLabel?: string;
   selected?: boolean;
   onPress?: PressableProps['onPress'];
   onLongPress?: () => void;
@@ -336,6 +339,7 @@ export function Chip({
       onPress={onPress}
       onLongPress={onLongPress}
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ selected: !!selected }}
       style={({ pressed }) => [
         styles.chip,

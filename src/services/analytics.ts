@@ -621,11 +621,18 @@ export function productStats(lines: ProductLine[]): ProductStats {
     const qty = ls.reduce((s, l) => s + (l.quantityMicro ?? 0), 0);
     const measuredQty = measured.reduce((s, l) => s + l.quantityMicro!, 0);
     const measuredSpent = measured.reduce((s, l) => s + l.totalMinor!, 0);
-    const merchants = new Map<string, { merchantId: string | null; merchantName: string; prices: number[] }>();
+    const merchants = new Map<
+      string,
+      { merchantId: string | null; merchantName: string; prices: number[]; spent: number; qty: number }
+    >();
     for (const l of priced) {
       const key = l.merchantId ?? NO_MERCHANT;
-      const m = merchants.get(key) ?? { merchantId: l.merchantId, merchantName: l.merchantName ?? 'No merchant', prices: [] };
+      const m = merchants.get(key) ?? { merchantId: l.merchantId, merchantName: l.merchantName ?? 'No merchant', prices: [], spent: 0, qty: 0 };
       m.prices.push(l.normalisedPriceMinor!);
+      if (l.quantityMicro !== null && l.totalMinor !== null) {
+        m.spent += l.totalMinor;
+        m.qty += l.quantityMicro;
+      }
       merchants.set(key, m);
     }
     const pick = (better: (a: PricePoint, b: PricePoint) => boolean) =>
@@ -646,7 +653,9 @@ export function productStats(lines: ProductLine[]): ProductStats {
           merchantId: m.merchantId,
           merchantName: m.merchantName,
           count: m.prices.length,
-          averagePriceMinor: Math.round(m.prices.reduce((s, p) => s + p, 0) / m.prices.length),
+          // Weighted like the overall average (spent ÷ quantity); a plain mean only when no line has a quantity.
+          averagePriceMinor:
+            m.qty > 0 ? pricePerBaseUnit(m.spent, m.qty) : Math.round(m.prices.reduce((s, p) => s + p, 0) / m.prices.length),
           lowestPriceMinor: Math.min(...m.prices),
         }))
         .sort((a, b) => a.averagePriceMinor - b.averagePriceMinor),

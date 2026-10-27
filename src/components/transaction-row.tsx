@@ -96,6 +96,7 @@ export function TransactionRow({
           <Text variant="caption" tone="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
             {d.subtitle}
             {t.itemCount > 0 ? ` · ${t.itemCount} item${t.itemCount > 1 ? 's' : ''}` : ''}
+            {t.tagNames ? ` · #${t.tagNames.split(', ').join(' #')}` : ''}
           </Text>
         </View>
       }
