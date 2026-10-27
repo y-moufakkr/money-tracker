@@ -191,3 +191,54 @@ export function presetRange(preset: PeriodPreset, today = todayISO()): DateRange
     }
   }
 }
+
+export type Granularity = 'day' | 'week' | 'month' | 'year';
+
+/** The calendar bucket (day, Monday-week, month, year) that contains `iso`. */
+export function bucketRange(g: Granularity, iso: string): DateRange {
+  switch (g) {
+    case 'day':
+      return { from: iso, to: iso };
+    case 'week': {
+      const from = startOfWeek(iso);
+      return { from, to: addDays(from, 6) };
+    }
+    case 'month':
+      return { from: startOfMonth(iso), to: endOfMonth(iso) };
+    case 'year':
+      return { from: startOfYear(iso), to: `${iso.slice(0, 4)}-12-31` };
+  }
+}
+
+/**
+ * End dates of the last `count` buckets, oldest first. The current bucket
+ * ends today (balances are not projected into the future).
+ */
+export function trendDates(g: Granularity, count: number, today = todayISO()): string[] {
+  const out: string[] = [];
+  let anchor = today;
+  for (let i = 0; i < count; i++) {
+    const end = bucketRange(g, anchor).to;
+    out.push(end > today ? today : end);
+    const from = bucketRange(g, anchor).from;
+    anchor = addDays(from, -1);
+  }
+  return out.reverse();
+}
+
+/** Short axis label for a bucket ending on `iso`. */
+export function bucketLabel(g: Granularity, iso: string): string {
+  const d = toUTC(iso);
+  switch (g) {
+    case 'day':
+      return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+    case 'week': {
+      const s = toUTC(startOfWeek(iso));
+      return `${s.getUTCDate()} ${MONTHS[s.getUTCMonth()]}`;
+    }
+    case 'month':
+      return `${MONTHS[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(2)}`;
+    case 'year':
+      return String(d.getUTCFullYear());
+  }
+}

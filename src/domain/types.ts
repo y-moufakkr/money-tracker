@@ -121,12 +121,15 @@ export type PurchaseItemInput = {
   unitPriceMinor: number | null;
   totalMinor: number | null;
   notes?: string | null;
+  /** Tags on this line only. Undefined on input means none. */
+  tagIds?: string[];
 };
 
 export type PurchaseItem = PurchaseItemInput & {
   id: string;
   productId: string | null;
   sortOrder: number;
+  tagIds: string[];
 };
 
 export const UNITS = ['kg', 'g', 'L', 'ml', 'piece', 'pack', 'bottle', 'dozen', 'box'];
@@ -168,4 +171,51 @@ export type Reconciliation = {
   note: string | null;
   createdAt: string;
   resolvedAt: string | null;
+};
+
+export type Tag = {
+  id: string;
+  name: string;
+  color: string | null;
+  isArchived: boolean;
+};
+
+export type BudgetPeriod = 'weekly' | 'monthly' | 'custom';
+
+export type BudgetLine = { id: string; categoryId: string; amountMinor: number };
+
+export type Budget = {
+  id: string;
+  name: string;
+  period: BudgetPeriod;
+  /** Custom periods only. */
+  startDate: string | null;
+  endDate: string | null;
+  /** Overall spending limit; null means "the sum of the category lines". */
+  amountMinor: number | null;
+  currency: string;
+  /** Warning thresholds in percent, ascending, e.g. [75, 90, 100]. */
+  thresholds: number[];
+  isArchived: boolean;
+  lines: BudgetLine[];
+};
+
+export type SavingsGoal = {
+  id: string;
+  name: string;
+  targetMinor: number;
+  currency: string;
+  targetDate: string | null;
+  monthlyPlanMinor: number | null;
+  icon: string | null;
+  color: string | null;
+  notes: string | null;
+};
+
+export type GoalAllocation = {
+  id: string;
+  goalId: string;
+  accountId: string;
+  /** In the account's currency. */
+  amountMinor: number;
 };

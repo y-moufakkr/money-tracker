@@ -9,8 +9,8 @@ function bind(params: BindParams): unknown[] {
   return [params];
 }
 
-/** In-memory database using Node's built-in SQLite, migrated to the latest schema. */
-export async function createTestDb(): Promise<Db> {
+/** In-memory database using Node's built-in SQLite, migrated to the latest schema (or to `version`). */
+export async function createTestDb(version?: number): Promise<Db> {
   const raw = new DatabaseSync(':memory:');
   const db = createDb({
     exec: async (sql) => {
@@ -27,6 +27,6 @@ export async function createTestDb(): Promise<Db> {
       return r ? ({ ...r } as T) : null;
     },
   });
-  await migrate(db);
+  await migrate(db, version);
   return db;
 }

@@ -183,12 +183,101 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 2,
+    name: 'tags, budgets, savings goals',
+    up: async (tx) => {
+      await tx.exec(`
+        CREATE TABLE tags (
+          id TEXT PRIMARY KEY NOT NULL,
+          name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          color TEXT,
+          is_archived INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE transaction_tags (
+          transaction_id TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+          tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (transaction_id, tag_id)
+        );
+
+        CREATE TABLE item_tags (
+          item_id TEXT NOT NULL REFERENCES purchase_items(id) ON DELETE CASCADE,
+          tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (item_id, tag_id)
+        );
+
+        CREATE TABLE budgets (
+          id TEXT PRIMARY KEY NOT NULL,
+          name TEXT NOT NULL,
+          period TEXT NOT NULL CHECK (period IN ('weekly','monthly','custom')),
+          start_date TEXT,
+          end_date TEXT,
+          amount_minor INTEGER CHECK (amount_minor IS NULL OR amount_minor > 0),
+          currency TEXT NOT NULL DEFAULT 'MAD',
+          thresholds TEXT NOT NULL DEFAULT '75,90,100',
+          is_archived INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (period <> 'custom' OR (start_date IS NOT NULL AND end_date IS NOT NULL AND start_date <= end_date))
+        );
+
+        CREATE TABLE budget_lines (
+          id TEXT PRIMARY KEY NOT NULL,
+          budget_id TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+          category_id TEXT NOT NULL REFERENCES categories(id),
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (budget_id, category_id)
+        );
+
+        CREATE TABLE savings_goals (
+          id TEXT PRIMARY KEY NOT NULL,
+          name TEXT NOT NULL,
+          target_minor INTEGER NOT NULL CHECK (target_minor > 0),
+          currency TEXT NOT NULL DEFAULT 'MAD',
+          target_date TEXT,
+          monthly_plan_minor INTEGER CHECK (monthly_plan_minor IS NULL OR monthly_plan_minor > 0),
+          icon TEXT,
+          color TEXT,
+          notes TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE goal_allocations (
+          id TEXT PRIMARY KEY NOT NULL,
+          goal_id TEXT NOT NULL REFERENCES savings_goals(id) ON DELETE CASCADE,
+          account_id TEXT NOT NULL REFERENCES accounts(id),
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (goal_id, account_id)
+        );
+
+        CREATE INDEX idx_tx_tags_tag ON transaction_tags(tag_id);
+        CREATE INDEX idx_item_tags_tag ON item_tags(tag_id);
+        CREATE INDEX idx_categories_parent ON categories(parent_id);
+        CREATE INDEX idx_budget_lines_budget ON budget_lines(budget_id);
+        CREATE INDEX idx_allocations_account ON goal_allocations(account_id);
+      `);
+    },
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 
-/** Applies pending migrations, each in its own transaction. Refuses databases from a newer app. */
-export async function migrate(db: Db): Promise<number> {
+/**
+ * Applies pending migrations, each in its own transaction. Refuses databases from a newer app.
+ * `to` stops at an older version (used by tests to build a database as an earlier release left it).
+ */
+export async function migrate(db: Db, to: number = SCHEMA_VERSION): Promise<number> {
   await db.exec('PRAGMA foreign_keys = ON');
   const row = await db.first<{ user_version: number }>('PRAGMA user_version');
   const current = row?.user_version ?? 0;
@@ -198,11 +287,11 @@ export async function migrate(db: Db): Promise<number> {
     );
   }
   for (const m of MIGRATIONS) {
-    if (m.version <= current) continue;
+    if (m.version <= current || m.version > to) continue;
     await db.transaction(async (tx) => {
       await m.up(tx);
       await tx.exec(`PRAGMA user_version = ${m.version}`);
     });
   }
-  return SCHEMA_VERSION;
+  return Math.max(current, Math.min(to, SCHEMA_VERSION));
 }

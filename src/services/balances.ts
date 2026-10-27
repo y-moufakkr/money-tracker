@@ -44,15 +44,100 @@ export async function accountBalance(db: Db, accountId: string, asOf: string = t
 
 export type ConvertedAccount = AccountWithBalance & { baseMinor: number | null };
 
+// ---------------------------------------------------------------------------
+// Goal reservations. An allocation reserves part of a real account: it never
+// moves money and never adds to a total. What an account can back is capped
+// by its current balance.
+
+export type AllocationRow = { goalId: string; accountId: string; amountMinor: number };
+
+export type AccountReservation = {
+  accountId: string;
+  balanceMinor: number;
+  /** Σ allocations on this account (account currency). */
+  allocatedMinor: number;
+  /** Part of the allocations covered by the balance: min(allocated, max(balance, 0)). */
+  backedMinor: number;
+  /** Balance left after backed allocations (never negative unless the balance is). */
+  unallocatedMinor: number;
+  /** Allocations not covered by the balance. */
+  overAllocatedMinor: number;
+  /** Backed amount per goal; sums to `backedMinor`. */
+  byGoal: Map<string, number>;
+};
+
+/**
+ * Pure. Caps each account's allocations at its balance. When an account holds
+ * less than is allocated, the money it does hold is split between its goals
+ * pro rata (largest remainder), so the backed amounts add up exactly.
+ */
+export function reserveAllocations(
+  balances: { id: string; balanceMinor: number }[],
+  allocations: AllocationRow[],
+): Map<string, AccountReservation> {
+  const out = new Map<string, AccountReservation>();
+  for (const b of balances) {
+    const own = allocations.filter((a) => a.accountId === b.id);
+    const allocated = own.reduce((sum, a) => sum + a.amountMinor, 0);
+    const holdable = Math.max(0, b.balanceMinor);
+    const backed = Math.min(allocated, holdable);
+    const byGoal = new Map<string, number>();
+    if (allocated <= holdable) {
+      for (const a of own) byGoal.set(a.goalId, (byGoal.get(a.goalId) ?? 0) + a.amountMinor);
+    } else {
+      const shares = own.map((a) => {
+        const num = BigInt(a.amountMinor) * BigInt(holdable);
+        const q = num / BigInt(allocated);
+        return { goalId: a.goalId, base: Number(q), rem: num - q * BigInt(allocated) };
+      });
+      let left = holdable - shares.reduce((sum, x) => sum + x.base, 0);
+      for (const x of [...shares].sort((p, q) => (q.rem > p.rem ? 1 : q.rem < p.rem ? -1 : 0))) {
+        if (left <= 0) break;
+        x.base += 1;
+        left -= 1;
+      }
+      for (const x of shares) byGoal.set(x.goalId, (byGoal.get(x.goalId) ?? 0) + x.base);
+    }
+    out.set(b.id, {
+      accountId: b.id,
+      balanceMinor: b.balanceMinor,
+      allocatedMinor: allocated,
+      backedMinor: backed,
+      unallocatedMinor: b.balanceMinor - backed,
+      overAllocatedMinor: allocated - backed,
+      byGoal,
+    });
+  }
+  return out;
+}
+
+export async function listAllocations(db: Db): Promise<AllocationRow[]> {
+  const rows = await db.all<{ goal_id: string; account_id: string; amount_minor: number }>(
+    'SELECT goal_id, account_id, amount_minor FROM goal_allocations ORDER BY created_at',
+  );
+  return rows.map((r) => ({ goalId: r.goal_id, accountId: r.account_id, amountMinor: r.amount_minor }));
+}
+
+/** Current reservations on every active account. */
+export async function accountReservations(db: Db): Promise<Map<string, AccountReservation>> {
+  const [balances, allocations] = await Promise.all([accountBalances(db), listAllocations(db)]);
+  return reserveAllocations(balances, allocations);
+}
+
 export type PersonalSummary = {
   bank: number;
   cash: number;
   savings: number;
   otherLiquid: number;
   liquid: number;
-  /** Goal and bill reservations — Phase 2. */
+  /** Money reserved for savings goals (backed by real balances). Bills come in Phase 5. */
   reserved: number;
+  /** Liquid − reserved: money not set aside for anything. */
   available: number;
+  /** Reservations only exist in the present; historical views report 0. */
+  reservationsApply: boolean;
+  /** Accounts holding less than is allocated to goals on them. */
+  overAllocated: { account: ConvertedAccount; allocatedMinor: number; shortMinor: number }[];
   liabilities: number;
   netLiquid: number;
   accounts: ConvertedAccount[];
@@ -78,12 +163,19 @@ export type MoneySummary = {
   companies: CompanySummary[];
 };
 
+/**
+ * Personal and company totals at the end of `asOf`. Past dates include
+ * locations archived since then, because they held money at the time.
+ */
 export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<MoneySummary> {
-  const [balances, rates, companies] = await Promise.all([
-    accountBalances(db, { asOf }),
+  const current = asOf >= todayISO();
+  const [balances, rates, companies, allocations] = await Promise.all([
+    accountBalances(db, { asOf, includeArchived: !current }),
     latestRates(db, asOf),
     listCompanies(db),
+    current ? listAllocations(db) : Promise.resolve([]),
   ]);
+  const reservations = reserveAllocations(balances, allocations);
   const converted: ConvertedAccount[] = balances.map((a) => ({
     ...a,
     baseMinor: convertToBase(a.balanceMinor, a.currency, rates),
@@ -97,6 +189,8 @@ export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<M
     liquid: 0,
     reserved: 0,
     available: 0,
+    reservationsApply: current,
+    overAllocated: [],
     liabilities: 0,
     netLiquid: 0,
     accounts: [],
@@ -118,6 +212,13 @@ export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<M
         continue;
       }
       const v = a.baseMinor;
+      const r = reservations.get(a.id);
+      if (r && r.allocatedMinor > 0) {
+        personal.reserved += convertToBase(r.backedMinor, a.currency, rates) ?? 0;
+        if (r.overAllocatedMinor > 0) {
+          personal.overAllocated.push({ account: a, allocatedMinor: r.allocatedMinor, shortMinor: r.overAllocatedMinor });
+        }
+      }
       switch (a.kind) {
         case 'bank':
           personal.bank += v;
@@ -193,4 +294,27 @@ export async function accountLedger(db: Db, account: Account): Promise<AccountLe
     };
   });
   return lines.reverse();
+}
+
+export type BalancePoint = {
+  date: string;
+  /** Personal liquid assets (base currency). */
+  liquid: number;
+  /** Liquid − credit card debt. */
+  netLiquid: number;
+  /** Balance per location at that date, in its own currency. */
+  accounts: Record<string, number>;
+};
+
+/** Balances at the end of each date, built from the same calculation as My Money. */
+export async function balanceHistory(db: Db, dates: string[]): Promise<BalancePoint[]> {
+  const points: BalancePoint[] = [];
+  for (const date of dates) {
+    const s = await moneySummary(db, date);
+    const accounts: Record<string, number> = {};
+    for (const a of s.personal.accounts) accounts[a.id] = a.balanceMinor;
+    for (const co of s.companies) for (const a of co.accounts) accounts[a.id] = a.balanceMinor;
+    points.push({ date, liquid: s.personal.liquid, netLiquid: s.personal.netLiquid, accounts });
+  }
+  return points;
 }

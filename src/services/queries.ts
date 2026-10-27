@@ -1,10 +1,11 @@
-import { LedgerError, type BindValue, type Db } from '@/db/types';
+import type { BindValue, Db } from '@/db/types';
 import { todayISO } from '@/domain/dates';
 import { BASE_CURRENCY, convertToBase } from '@/domain/money';
 import {
   PERSONAL_INCOME_TRANSFER_CLASSES,
   type Category,
   type CategoryKind,
+  type Tag,
   type ItemLineKind,
   type Merchant,
   type Ownership,
@@ -13,7 +14,7 @@ import {
   type TransactionKind,
   type TransferClass,
 } from '@/domain/types';
-import { newId, nowISO } from '@/lib/id';
+import { mapCategory, type CategoryRow } from './catalog';
 import { latestRates } from './fx';
 
 // ---------------------------------------------------------------------------
@@ -33,19 +34,36 @@ export type TransactionListItem = {
   category: { id: string; name: string; icon: string | null; color: string | null } | null;
   merchantName: string | null;
   itemCount: number;
+  /** Comma-separated transaction-level tag names. */
+  tagNames: string | null;
   /** Expense / income / adjustment account. */
   account: TxAccountRef | null;
   from: TxAccountRef | null;
   to: TxAccountRef | null;
 };
 
+/** Filter values that match transactions without a category, tag or merchant. */
+export const NO_CATEGORY = '__none__';
+export const NO_TAG = '__none__';
+export const NO_MERCHANT = '__none__';
+
+export type EssentialClass = 'essential' | 'discretionary' | 'unclassified';
+
 export type TransactionFilter = {
   from?: string;
   to?: string;
   accountId?: string;
   kinds?: TransactionKind[];
+  /** A category id, or NO_CATEGORY. */
   categoryId?: string;
+  /** Also match the category's subcategories. */
+  includeSubcategories?: boolean;
   merchantId?: string;
+  /** Tagged on the transaction or on one of its item lines. */
+  tagId?: string;
+  /** Has an item line for this product. */
+  productId?: string;
+  essential?: EssentialClass;
   ownership?: Ownership;
   search?: string;
   limit?: number;
@@ -67,6 +85,7 @@ type ListRow = {
   cat_color: string | null;
   merchant_name: string | null;
   item_count: number;
+  tag_names: string | null;
   main_id: string | null;
   main_name: string | null;
   main_own: Ownership | null;
@@ -108,11 +127,39 @@ export async function listTransactions(db: Db, f: TransactionFilter = {}): Promi
     where.push(`t.kind IN (${f.kinds.map(() => '?').join(',')})`);
     params.push(...f.kinds);
   }
-  if (f.categoryId) {
+  if (f.categoryId === NO_CATEGORY) {
+    where.push('t.category_id IS NULL');
+  } else if (f.categoryId && f.includeSubcategories) {
+    where.push('(t.category_id = ? OR c.parent_id = ?)');
+    params.push(f.categoryId, f.categoryId);
+  } else if (f.categoryId) {
     where.push('t.category_id = ?');
     params.push(f.categoryId);
   }
-  if (f.merchantId) {
+  if (f.tagId === NO_TAG) {
+    where.push(`(NOT EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id)
+      AND NOT EXISTS (SELECT 1 FROM purchase_items pi JOIN item_tags it ON it.item_id = pi.id WHERE pi.transaction_id = t.id))`);
+  } else if (f.tagId) {
+    where.push(`(EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND tt.tag_id = ?)
+      OR EXISTS (SELECT 1 FROM purchase_items pi JOIN item_tags it ON it.item_id = pi.id
+                 WHERE pi.transaction_id = t.id AND it.tag_id = ?))`);
+    params.push(f.tagId, f.tagId);
+  }
+  if (f.productId) {
+    where.push('EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.transaction_id = t.id AND pi.product_id = ?)');
+    params.push(f.productId);
+  }
+  if (f.essential) {
+    where.push(
+      f.essential === 'unclassified'
+        ? 'COALESCE(c.essential, cp.essential) IS NULL'
+        : 'COALESCE(c.essential, cp.essential) = ?',
+    );
+    if (f.essential !== 'unclassified') params.push(f.essential === 'essential' ? 1 : 0);
+  }
+  if (f.merchantId === NO_MERCHANT) {
+    where.push('t.merchant_id IS NULL');
+  } else if (f.merchantId) {
     where.push('t.merchant_id = ?');
     params.push(f.merchantId);
   }
@@ -138,11 +185,14 @@ export async function listTransactions(db: Db, f: TransactionFilter = {}): Promi
     `SELECT t.id, t.kind, t.date, t.amount_minor, t.currency, t.note, t.transfer_class, t.parent_id, t.category_id,
        c.name AS cat_name, c.icon AS cat_icon, c.color AS cat_color, m.name AS merchant_name,
        (SELECT COUNT(*) FROM purchase_items pi WHERE pi.transaction_id = t.id) AS item_count,
+       (SELECT GROUP_CONCAT(g.name, ', ') FROM transaction_tags tt JOIN tags g ON g.id = tt.tag_id
+        WHERE tt.transaction_id = t.id) AS tag_names,
        pm.account_id AS main_id, am.name AS main_name, am.ownership AS main_own, am.currency AS main_cur, pm.amount_minor AS main_amount,
        pf.account_id AS from_id, af.name AS from_name, af.ownership AS from_own, af.currency AS from_cur, pf.amount_minor AS from_amount,
        pt.account_id AS to_id, at2.name AS to_name, at2.ownership AS to_own, at2.currency AS to_cur, pt.amount_minor AS to_amount
      FROM transactions t
      LEFT JOIN categories c ON c.id = t.category_id
+     LEFT JOIN categories cp ON cp.id = c.parent_id
      LEFT JOIN merchants m ON m.id = t.merchant_id
      LEFT JOIN postings pm ON pm.transaction_id = t.id AND pm.role = 'main'
      LEFT JOIN accounts am ON am.id = pm.account_id
@@ -170,6 +220,7 @@ export async function listTransactions(db: Db, f: TransactionFilter = {}): Promi
       : null,
     merchantName: r.merchant_name,
     itemCount: r.item_count,
+    tagNames: r.tag_names,
     account: ref(r.main_id, r.main_name, r.main_own, r.main_cur, r.main_amount),
     from: ref(r.from_id, r.from_name, r.from_own, r.from_cur, r.from_amount),
     to: ref(r.to_id, r.to_name, r.to_own, r.to_cur, r.to_amount),
@@ -188,6 +239,7 @@ export type TransactionDetail = Transaction & {
   category: Category | null;
   instrument: { id: string; name: string; kind: string; last4: string | null } | null;
   reconciliationId: string | null;
+  tags: Tag[];
 };
 
 export async function getTransaction(db: Db, id: string): Promise<TransactionDetail | null> {
@@ -214,7 +266,7 @@ export async function getTransaction(db: Db, id: string): Promise<TransactionDet
   );
   if (!t) return null;
 
-  const [postings, items, fees, category, instrument, rec] = await Promise.all([
+  const [postings, items, fees, category, instrument, rec, tags, itemTags] = await Promise.all([
     db.all<{ account_id: string; name: string; ownership: Ownership; currency: string; amount_minor: number; role: string }>(
       `SELECT p.account_id, a.name, a.ownership, a.currency, p.amount_minor, p.role
        FROM postings p JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.role`,
@@ -244,6 +296,16 @@ export async function getTransaction(db: Db, id: string): Promise<TransactionDet
         )
       : Promise.resolve(null),
     db.first<{ id: string }>('SELECT id FROM reconciliations WHERE adjustment_transaction_id = ?', [id]),
+    db.all<{ id: string; name: string; color: string | null; is_archived: number }>(
+      `SELECT g.id, g.name, g.color, g.is_archived FROM transaction_tags tt JOIN tags g ON g.id = tt.tag_id
+       WHERE tt.transaction_id = ? ORDER BY g.name`,
+      [id],
+    ),
+    db.all<{ item_id: string; tag_id: string }>(
+      `SELECT it.item_id, it.tag_id FROM item_tags it JOIN purchase_items pi ON pi.id = it.item_id
+       WHERE pi.transaction_id = ?`,
+      [id],
+    ),
   ]);
 
   const refs = postings.map((p) => ({
@@ -283,11 +345,13 @@ export async function getTransaction(db: Db, id: string): Promise<TransactionDet
       totalMinor: i.total_minor,
       notes: i.notes,
       sortOrder: i.sort_order,
+      tagIds: itemTags.filter((x) => x.item_id === i.id).map((x) => x.tag_id),
     })),
     fees: fees.map((f) => ({ id: f.id, amountMinor: f.amount_minor, currency: f.currency })),
     category,
     instrument,
     reconciliationId: rec?.id ?? null,
+    tags: tags.map((g) => ({ id: g.id, name: g.name, color: g.color, isArchived: g.is_archived === 1 })),
   };
 }
 
@@ -443,30 +507,6 @@ export async function periodSummary(
 // ---------------------------------------------------------------------------
 // Categories, merchants, suggestions
 
-type CategoryRow = {
-  id: string;
-  name: string;
-  kind: CategoryKind;
-  parent_id: string | null;
-  icon: string | null;
-  color: string | null;
-  essential: number | null;
-  is_system: number;
-  is_archived: number;
-};
-
-const mapCategory = (r: CategoryRow): Category => ({
-  id: r.id,
-  name: r.name,
-  kind: r.kind,
-  parentId: r.parent_id,
-  icon: r.icon,
-  color: r.color,
-  essential: r.essential === null ? null : r.essential === 1,
-  isSystem: r.is_system === 1,
-  isArchived: r.is_archived === 1,
-});
-
 export async function getCategory(db: Db, id: string): Promise<Category | null> {
   const r = await db.first<CategoryRow>('SELECT * FROM categories WHERE id = ?', [id]);
   return r ? mapCategory(r) : null;
@@ -486,22 +526,6 @@ export async function listCategories(db: Db, kind: CategoryKind): Promise<Catego
     [kind],
   );
   return rows.map(mapCategory);
-}
-
-export async function createCategory(
-  db: Db,
-  input: { name: string; kind: CategoryKind; icon?: string | null; color?: string | null },
-): Promise<string> {
-  const name = input.name.trim();
-  if (!name) throw new LedgerError('Category name is required.');
-  const id = newId();
-  const ts = nowISO();
-  await db.run(
-    `INSERT INTO categories (id, name, kind, icon, color, sort_order, is_system, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories), 0, ?, ?)`,
-    [id, name, input.kind, input.icon ?? 'label', input.color ?? '#8B8F98', ts, ts],
-  );
-  return id;
 }
 
 export type MerchantSuggestion = Merchant & { useCount: number; lastUsed: string | null };

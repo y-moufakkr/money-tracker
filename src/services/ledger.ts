@@ -19,6 +19,8 @@ export type ExpenseInput = {
   merchantName?: string | null;
   note?: string | null;
   items?: PurchaseItemInput[];
+  /** Tags on the whole expense. Undefined keeps the current tags when editing. */
+  tagIds?: string[];
 };
 
 export type IncomeInput = {
@@ -138,17 +140,39 @@ function validateItems(items: PurchaseItemInput[]) {
   }
 }
 
+async function assertTags(tx: Db, tagIds: string[]) {
+  for (const id of new Set(tagIds)) {
+    const t = await tx.first<{ id: string }>('SELECT id FROM tags WHERE id = ?', [id]);
+    if (!t) throw new LedgerError('Tag not found.');
+  }
+}
+
+/** Replaces a transaction's tags. A tag can only be attached once (primary key). */
+async function writeTransactionTags(tx: Db, transactionId: string, tagIds: string[]) {
+  await assertTags(tx, tagIds);
+  await tx.run('DELETE FROM transaction_tags WHERE transaction_id = ?', [transactionId]);
+  const ts = nowISO();
+  for (const tagId of new Set(tagIds)) {
+    await tx.run('INSERT INTO transaction_tags (transaction_id, tag_id, created_at) VALUES (?, ?, ?)', [
+      transactionId,
+      tagId,
+      ts,
+    ]);
+  }
+}
+
 async function insertItems(tx: Db, transactionId: string, items: PurchaseItemInput[]) {
   const ts = nowISO();
   for (const [i, it] of items.entries()) {
     const name = it.name.trim();
     const productId = it.lineKind === 'product' ? await upsertProduct(tx, name, it.unit) : null;
+    const itemId = newId();
     await tx.run(
       `INSERT INTO purchase_items (id, transaction_id, product_id, line_kind, name, quantity_milli, unit,
          unit_price_minor, total_minor, notes, sort_order, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        newId(),
+        itemId,
         transactionId,
         productId,
         it.lineKind,
@@ -162,6 +186,11 @@ async function insertItems(tx: Db, transactionId: string, items: PurchaseItemInp
         ts,
       ],
     );
+    const tagIds = [...new Set(it.tagIds ?? [])];
+    await assertTags(tx, tagIds);
+    for (const tagId of tagIds) {
+      await tx.run('INSERT INTO item_tags (item_id, tag_id, created_at) VALUES (?, ?, ?)', [itemId, tagId, ts]);
+    }
   }
 }
 
@@ -228,6 +257,7 @@ async function clearDerived(tx: Db, id: string) {
     await tx.run('DELETE FROM transactions WHERE id = ?', [c.id]);
   }
   await tx.run('DELETE FROM postings WHERE transaction_id = ?', [id]);
+  await tx.run('DELETE FROM item_tags WHERE item_id IN (SELECT id FROM purchase_items WHERE transaction_id = ?)', [id]);
   await tx.run('DELETE FROM purchase_items WHERE transaction_id = ?', [id]);
 }
 
@@ -285,6 +315,7 @@ export async function saveExpense(db: Db, input: ExpenseInput, id: string | null
     });
     await insertPosting(tx, txId, account.id, -input.amountMinor, 'main');
     await insertItems(tx, txId, items);
+    if (input.tagIds !== undefined) await writeTransactionTags(tx, txId, input.tagIds);
     return txId;
   });
 }
