@@ -37,7 +37,15 @@
       "@react-native-community/datetimepicker",
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Money Tracker uses the camera to photograph receipts. The photo stays on your phone.",
+          "photosPermission": "Money Tracker lets you pick a receipt photo. It stays on your phone.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false,

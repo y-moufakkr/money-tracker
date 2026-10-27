@@ -8,6 +8,7 @@ import { radius, space, useColors } from '@/ui/theme';
 
 const ACTIONS: { icon: string; label: string; hint: string; href: Href; tone: 'negative' | 'positive' | 'primary' | 'warning' | 'muted' }[] = [
   { icon: 'remove', label: 'Expense', hint: 'Money spent', href: '/entry/expense', tone: 'negative' },
+  { icon: 'document_scanner', label: 'Scan receipt', hint: 'Photo → expense', href: '/scan?from=camera', tone: 'negative' },
   { icon: 'add', label: 'Income', hint: 'Money received', href: '/entry/income', tone: 'positive' },
   { icon: 'swap_horiz', label: 'Transfer', hint: 'Move between locations', href: '/entry/transfer', tone: 'primary' },
   { icon: 'add_card', label: 'Money location', hint: 'Bank, cash, card…', href: '/accounts/new', tone: 'muted' },

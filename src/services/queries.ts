@@ -596,6 +596,11 @@ export async function suggestMerchants(db: Db, query = '', limit = 8, kind: 'exp
   });
 }
 
+/** Every active merchant's name, for matching a scanned receipt to an existing merchant. */
+export async function listMerchantNames(db: Db): Promise<{ id: string; name: string }[]> {
+  return db.all<{ id: string; name: string }>('SELECT id, name FROM merchants WHERE is_archived = 0 ORDER BY name');
+}
+
 export async function suggestProducts(db: Db, query = '', limit = 6): Promise<{ name: string; unit: string | null; lastUnitPriceMinor: number | null }[]> {
   const q = query.trim();
   const rows = await db.all<{ name: string; default_unit: string | null; last_price: number | null }>(

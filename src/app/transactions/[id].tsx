@@ -1,12 +1,16 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { Alert, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 
 import { formatDateLabel } from '@/domain/dates';
 import { formatMoney, formatQuantity } from '@/domain/money';
 import { transferClassLabel } from '@/domain/types';
+import { PhotoThumb } from '@/components/receipt-photos';
+import { useAttachments } from '@/hooks/attachments';
 import { useLedgerMutation, useTags, useTransaction, useTransactionLinks, useTransactionPlans } from '@/hooks/data';
+import { attachmentStore } from '@/lib/attachment-store';
+import { confirmAction, notify } from '@/lib/confirm';
 import { closeScreen } from '@/lib/navigation';
-import { deleteTransaction } from '@/services/ledger';
+import { deleteTransactionWithFiles } from '@/services/attachments';
 import { Amount, Banner, Button, Card, Divider, EmptyState, IconBadge, ListItem, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
@@ -25,7 +29,8 @@ export default function TransactionScreen() {
   const c = useColors();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { data: t, isLoading } = useTransaction(id);
-  const remove = useLedgerMutation((db, txId: string) => deleteTransaction(db, txId));
+  const remove = useLedgerMutation((db, txId: string) => deleteTransactionWithFiles(db, attachmentStore, txId));
+  const photos = useAttachments(id).data ?? [];
   const tagNames = new Map((useTags(true).data ?? []).map((g) => [g.id, g.name]));
   const links = useTransactionLinks(id).data;
   const plans = useTransactionPlans(id).data;
@@ -52,10 +57,11 @@ export default function TransactionScreen() {
   const editHref =
     t.kind === 'expense' ? `/entry/expense?id=${t.id}` : t.kind === 'income' ? `/entry/income?id=${t.id}` : t.kind === 'transfer' ? `/entry/transfer?id=${t.id}` : null;
 
+  const photoNote = photos.length ? ` ${photos.length === 1 ? 'Its receipt photo is' : 'Its receipt photos are'} deleted too.` : '';
   const confirmDelete = () =>
-    Alert.alert(
+    confirmAction(
       'Delete this transaction?',
-      t.kind === 'adjustment'
+      (t.kind === 'adjustment'
         ? 'The balance check it came from will be re-opened for investigation.'
         : t.fees.length
           ? `Its ${t.kind === 'debt' ? 'interest' : 'transfer fee'} will be deleted too. Balances are recalculated.`
@@ -67,11 +73,10 @@ export default function TransactionScreen() {
                 : `The debt with ${plans.debt.counterparty} will be outstanding again. Balances are recalculated.`
               : plans?.expected
                 ? `“${plans.expected.name}” will be unpaid again. Balances are recalculated.`
-                : 'Balances are recalculated immediately.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => remove.mutate(t.id, { onSuccess: () => closeScreen(), onError: (e) => Alert.alert('Not possible', e.message) }) },
-      ],
+                : 'Balances are recalculated immediately.') + photoNote,
+      'Delete',
+      () => remove.mutate(t.id, { onSuccess: () => closeScreen(), onError: (e) => notify('Not possible', e.message) }),
+      true,
     );
 
   const itemsTotal = t.items.reduce((s, i) => s + (i.totalMinor ?? 0) * (i.lineKind === 'discount' ? -1 : 1), 0);
@@ -215,6 +220,17 @@ export default function TransactionScreen() {
               Recorded from a balance check to match the actual balance. Not counted as income or spending.
             </Banner>
           </View>
+        )}
+
+        {photos.length > 0 && (
+          <>
+            <SectionHeader title={photos.length === 1 ? 'Receipt photo' : `Receipt photos · ${photos.length}`} />
+            <Row style={{ flexWrap: 'wrap' }} gap={space.md}>
+              {photos.map((a) => (
+                <PhotoThumb key={a.id} path={a.path} size={96} onPress={() => router.push(`/attachments/${a.id}`)} />
+              ))}
+            </Row>
+          </>
         )}
 
         {t.items.length > 0 && (

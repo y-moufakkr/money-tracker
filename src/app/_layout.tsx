@@ -83,6 +83,8 @@ export default function RootLayout() {
                   options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false, contentStyle: { backgroundColor: 'transparent' } }}
                 />
                 <Stack.Screen name="entry/expense" options={{ ...modal, title: 'Expense' }} />
+                <Stack.Screen name="scan" options={{ ...modal, title: 'Scan receipt' }} />
+                <Stack.Screen name="attachments/[id]" options={{ title: 'Receipt' }} />
                 <Stack.Screen name="entry/income" options={{ ...modal, title: 'Income' }} />
                 <Stack.Screen name="entry/transfer" options={{ ...modal, title: 'Transfer' }} />
                 <Stack.Screen name="accounts/new" options={{ ...modal, title: 'New money location' }} />
