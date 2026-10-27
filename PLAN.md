@@ -10,7 +10,7 @@ Guiding rule: **one dirham is never counted twice.** Every balance is derived fr
 |---|---|---|
 | Runtime | Expo SDK 58, React Native 0.88, React 19.3, TypeScript 6 | `npx expo install` for all native deps |
 | Navigation | Expo Router 58, `NativeTabs` (Material bottom nav on Android, max 5 tabs) + root `Stack` for detail screens and modals | Routes live in `src/app/` |
-| Storage | `expo-sqlite` 58, WAL mode, `PRAGMA foreign_keys = ON` | Runs in Expo Go for Phase 1–3 |
+| Storage | `expo-sqlite` 58, WAL mode, `PRAGMA foreign_keys = ON` | Backup uses `VACUUM INTO`, `deserializeDatabaseAsync` and `backupDatabaseAsync` |
 | Server state | TanStack Query 5: every DB read is a query; every write invalidates the `['ledger']` key | |
 | UI state | Zustand 5 (small UI prefs) | |
 | Charts | `react-native-svg` (in Expo Go) for line charts; plain Views for bars, columns and meters | No chart library |
@@ -18,7 +18,8 @@ Guiding rule: **one dirham is never counted twice.** Every balance is derived fr
 | Dates | `@react-native-community/datetimepicker` (native Android dialog) | |
 | IDs | `expo-crypto` `randomUUID()` | UUID v4 text keys everywhere |
 | Tests | `jest-expo` preset; DB tests use Node's built-in `node:sqlite` behind the same `Db` interface the app uses | No native modules are needed in tests |
-| Auth/backup (Phase 4) | `@react-native-google-signin/google-signin` + Drive REST API, scope `drive.appdata` only | Needs a development build, not Expo Go |
+| Auth/backup (Phase 4) | `@react-native-google-signin/google-signin` 16 + Drive v3 REST via `expo/fetch`, scope `drive.appdata` only | Needs a development build (`expo-dev-client`), not Expo Go |
+| Files (Phase 4) | `expo-file-system` 58 (`File`, `Paths`, `File.pickFileAsync`) + `expo-sharing` | Export files go through the system share sheet |
 
 ## Source layout
 
@@ -37,13 +38,15 @@ src/
   services/            ledger (money writes), balances (all balance + reservation maths), queries (lists),
                        catalog (categories/merchants/products/tags), goals, budgets, analytics, insights,
                        company (fiscal years, assumptions, reserves, P&L, tax estimate), obligations,
-                       distributions, overview (SARL dashboard + three totals), company-analytics
-  hooks/               TanStack Query hooks wrapping services
+                       distributions, overview (SARL dashboard + three totals), company-analytics,
+                       backup (snapshot, manifest, verify, restore, divergence, retention), drive-api, export
+  hooks/               TanStack Query hooks wrapping services (backup.ts: Google account + backup actions)
+  lib/                 platform glue: confirm, files (+ .web), google-auth (+ .web), backup-engine (expo-sqlite), hash
   ui/                  design system: theme tokens, Text, Card, Button, Chip, inputs, Icon, FAB
-  test/                node:sqlite adapter for tests
+  test/                node:sqlite adapter, file-backed WAL test DB + backup engine, fake Drive, fixtures
 ```
 
-Services take a `Db` argument (`run`, `all`, `first`, `exec`, `transaction`), so the same code runs on the phone (expo-sqlite) and in Jest (node:sqlite).
+Services take a `Db` argument (`run`, `all`, `first`, `exec`, `transaction`, `exclusive`), so the same code runs on the phone (expo-sqlite) and in Jest (node:sqlite).
 
 ## Money representation
 
@@ -160,10 +163,16 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 - Indexes on fiscal years, tax items, reserves, simulations, distributions, liabilities, liability payments (by transaction) and `accounts(company_id)`.
 - Rates and shares are integer basis points (`2000` = 20 %), applied with `applyBp` (BigInt, half away from zero) in `domain/money.ts`.
 
+### v4 — Phase 4 (implemented)
+
+- `sync_meta` (one row, `id = 1`): `device_id` (random, created by the migration; kept across restores, new after a reinstall), `change_seq` + `last_change_at` (bumped by triggers), the **baseline** the data last matched (`baseline_seq`, `baseline_backup_id`, `baseline_created_at`, `baseline_device_id`, `baseline_sha256`), `last_backup_at`, `last_restore_at`/`last_restore_source`, the recovery copy (`recovery_at`, `recovery_label`, `recovery_sha256`, `recovery_size`), `keep_backups` (1–100, default 10) and `account_email`.
+- `backups(id = backup id, created_at, drive_file_id UNIQUE, account_email, schema_version, app_version, sha256, size, device_id, device_name, row_counts JSON, change_seq, status ∈ verified|deleted, verified_at, deleted_at)`: a log of this device's verified uploads.
+- **Change triggers**: `AFTER INSERT/UPDATE/DELETE` on every user-data table bump `sync_meta.change_seq`. `settings` (UI preferences), `sync_meta` and `backups` are not tracked (`UNTRACKED_TABLES`). **Any later migration that creates a table must run `changeTriggersSql(table)`**; a test fails otherwise.
+- Planned `sync_meta(device_id, last_backup_at)` grew the baseline, restore and recovery fields: they are what divergence detection and "undo restore" need.
+
 ### Later migrations (planned)
 
-- **v4 (Phase 4)**: `backups(id, created_at, drive_file_id, schema_version, sha256, size, device)`, `sync_meta(device_id, last_backup_at)`
-- **v5 (Phase 5)**: `recurring_rules`, `expected_payments`, `debts(direction ∈ owe|owed, counterparty, principal, due)`, `debt_payments`, `attachments(transaction_id, uri, mime, sha256)`
+- **v5 (Phase 5)**: `recurring_rules`, `expected_payments`, `debts(direction ∈ owe|owed, counterparty, principal, due)`, `debt_payments`, `attachments(transaction_id, uri, mime, sha256)` (attachment files must then be added to backups)
 
 ## Company module (Phase 3) rules
 
@@ -178,16 +187,31 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 - **Three totals**: A = personal liquid money; B = per company, liquidity after obligations (with cash, obligations and reserves shown); C = approved-unpaid net + an estimate from the current year's undistributed profit, capped by cash after obligations and unrecorded IS, × ownership − withholding. They are separate figures; no A + B + C exists anywhere. Scenarios ("if the approved distribution is paid") show A rising by exactly what company cash loses.
 - Simulator and payout output is labelled **"Estimated potential personal payout — not yet personal money."**
 
-## Backup (Phase 4)
+## Backup (Phase 4) rules
 
-- Snapshot: `PRAGMA wal_checkpoint(TRUNCATE)` then `VACUUM INTO` a temp file (consistent even in WAL mode). Compute SHA-256, then upload to Drive `appDataFolder` with metadata (schema version, device, created_at, row counts).
-- Restore: download, verify the hash, open the file read-only and check `user_version` ≤ app schema plus `PRAGMA integrity_check`. Then keep a local recovery copy, swap the files, and run migrations.
-- Divergence: if the local DB changed after the last backup and the remote is from another device, warn and require an explicit choice. This is backup/restore, **not** live sync, and the UI says so.
+This is snapshot **backup/restore, not sync**, and the UI says so: nothing is merged, a restore replaces everything.
+
+- **Snapshot**: with the write queue held (`Db.exclusive`), `PRAGMA wal_checkpoint(TRUNCATE)` then `VACUUM INTO` a temp file: one read transaction, so committed WAL content is in it and nothing half-written is. The live file is never copied. The snapshot is opened and `integrity_check`ed before use.
+- **Manifest**: backup id, created_at, app version, schema version (`user_version`), device id + name, SHA-256, size, `change_seq`, row counts per table. On Drive, scalar fields are `appProperties` (≤ 124 bytes each) and row counts are in `description`.
+- **Upload** (multipart, `parents: ['appDataFolder']`) → **download again and compare size + SHA-256** → record in `backups` and move the baseline to the snapshot's `change_seq` (writes made during the upload stay "not backed up"). A failed verification deletes the upload and records nothing.
+- **Retention** runs only after a verified upload: keep this device's newest `keep_backups`; never touch other devices' backups (they may hold data this phone never had), files that are not valid backups, the verified backup or the newest backup. Deleting by hand refuses the only valid backup. A failed clean-up never fails the backup.
+- **Restore**: size + SHA-256 (Drive) → SQLite header check → open an in-memory copy → `integrity_check`, core tables present, `user_version` ≤ app schema, `foreign_key_check` → migrate the **copy** (an older backup is upgraded before anything on the phone changes) → with the write queue held: snapshot the current data as the **recovery copy** (`money-tracker-recovery.db`), read it back and check its row counts → give the copy this device's metadata (device id, backup log, retention, account; the restore and recovery copy) → replace the live database with SQLite's **online backup API** (one transaction into the open connection) → run migrations, `quick_check`, compare every table's row count; on a mismatch the recovery copy is put back → refresh every query.
+- **Undo restore** = restore the recovery copy (its SHA-256 must match `sync_meta`), which itself keeps a recovery copy, so it can be undone too.
+- **Divergence**: local changes = `change_seq > baseline_seq` (or data never backed up). Restoring over local changes requires an explicit choice (back up first / replace). Also warned: a backup from another device, and one older than the local baseline (only when the phone has data: on a fresh install restoring is the expected path). Before backing up: a newer backup from another device that this phone's data does not include, or an empty phone while backups exist.
+- **Auth**: Google Sign-In with `webClientId` (web OAuth client) and scope `drive.appdata`; tokens stay with Play services and are fetched per request (`getTokens`, `clearCachedAccessToken` + retry once on 401). Backups belong to the Google account (each account has its own appDataFolder).
+
+## Export (Phase 4)
+
+- One row per **posting** (the effect of a transaction on one money location), so each row is on exactly one side: `personal` or `company` (+ company name). A company → personal transfer is two rows. Personal totals are computed from personal rows only; company totals per company; per currency, never converted, never added across sides.
+- Filters: date range, scope (personal / company / both), categories (with subcategories; a selection leaves out transfers and adjustments, uncategorised only on request).
+- CSV: RFC 4180, UTF-8 BOM, CRLF; amounts via `formatDecimal` (`-158.00`); free text starting with `= + - @` is prefixed with `'` (spreadsheet formula injection).
+- JSON: the same entries with `amount` (decimal string) and `amount_minor`, per-side totals (personal also shows salary/dividend income from a company), and per company the fiscal years with assumptions and their **source**, obligations (paid/outstanding) and distributions.
+- Full backup file: the same `VACUUM INTO` snapshot as a `.db` file via the share sheet; restorable from "Restore from a file" (integrity + schema checked; no SHA-256, since the file carries no manifest).
 
 ## Phases
 
 1. Core ledger, accounts, cards, income/expense/transfer, reconciliation, fast entry, itemized purchases, history, My Money ✅
 2. Analytics, catalog and price history, tags, budgets, goals and allocations, historical balances, insights ✅
 3. SARL dashboard, obligations, tax estimates, distribution simulator ✅
-4. Google Sign-In, Drive backup/restore, CSV/JSON export ← **next**
-5. Recurring bills, debts, attachments, notifications, OCR evaluation, polish
+4. Google Sign-In, Drive backup/restore, CSV/JSON export ✅ (device check pending)
+5. Recurring bills, debts, attachments, notifications, OCR evaluation, polish ← **next**

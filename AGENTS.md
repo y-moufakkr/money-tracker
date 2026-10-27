@@ -47,6 +47,7 @@ Read [PLAN.md](PLAN.md) and [PROGRESS.md](PROGRESS.md) first. Financial correctn
 - Amounts are integer minor units (`*_minor`). Never store floats. Parse and format only via `src/domain/money.ts`.
 - All writes that move money go through `src/services/ledger.ts` (or `reconciliation.ts`) inside `db.transaction`. Balances are only computed in `src/services/balances.ts` and never stored.
 - Business money is never added to personal totals. Company ↔ personal transfers require a `transfer_class`.
-- Schema changes need a new numbered migration in `src/db/migrations.ts`. Never edit an applied migration.
+- Schema changes need a new numbered migration in `src/db/migrations.ts`. Never edit an applied migration. A new user-data table also needs `changeTriggersSql(table)` in its migration (backup change tracking; a test enforces it).
+- Backup/restore is not sync. Snapshots only via `takeSnapshot` (`wal_checkpoint(TRUNCATE)` + `VACUUM INTO`); never copy the live DB file. Drive scope stays `drive.appdata`; never change `dev.moneytracker.app` or the EAS keystore (see docs/google-oauth.md).
 - Services depend on the `Db` interface (`src/db/types.ts`), so they can be tested with `node:sqlite`. Add a test in `src/services/*.test.ts` for every ledger rule.
 - Before finishing: `npx tsc --noEmit`, `npx eslint src`, `npm test`, then update PROGRESS.md.

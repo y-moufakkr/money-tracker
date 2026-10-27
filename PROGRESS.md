@@ -7,8 +7,8 @@ Last updated: 2026-10-27
 | 1 — Core financial tracking | ✅ Done (see verification below) |
 | 2 — Analytics & savings | ✅ Done (branch `phase-2`, see below) |
 | 3 — Company money | ✅ Done (branch `phase-3`, see below) |
-| 4 — Google Sign-In & Drive backup | ⏳ Next (Google Cloud + OAuth clients ready: [docs/google-oauth.md](docs/google-oauth.md)) |
-| 5 — Recurring, debts, attachments, polish | Not started |
+| 4 — Google Sign-In & Drive backup | ✅ Done (branch `phase-4`); Android device check pending, see the checklist below |
+| 5 — Recurring, debts, attachments, polish | ⏳ Next |
 
 ## Phase 1 — delivered
 
@@ -83,6 +83,62 @@ Last updated: 2026-10-27
   - Per-location trends plotted "0 DH" before the opening date.
 - **Still not verified on a physical Android device.**
 
+## Phase 4 — delivered
+
+**Data (migration v4, see [PLAN.md](PLAN.md#v4--phase-4-implemented))**
+- `sync_meta` (stable device id, change counter, the backup the data last matched, last backup/restore, recovery copy, retention) and `backups` (log of verified uploads). Change triggers on every user-data table bump the counter, so the app knows whether anything changed since the last backup. Migrations v1–v3 are unchanged; the upgrade is tested on a v3 database with company obligations, a paid TVA obligation, an approved and partly paid distribution, a goal, a budget and tags.
+- `Db` gained `exclusive(fn)`: holds the write queue outside a transaction (checkpoint, `VACUUM INTO`, restore).
+
+**Services** (pure logic and every rule tested with node:sqlite; native work behind ports)
+- [backup.ts](src/services/backup.ts): WAL-safe snapshot (`wal_checkpoint(TRUNCATE)` + `VACUUM INTO`), manifest with SHA-256 and row counts, Drive metadata encoding, inspection (`integrity_check`, schema, core tables, foreign keys), backup to Drive with download-and-verify before recording, retention, verified restore with recovery copy and automatic roll-back, undo restore, divergence checks. Ports: `BackupEngine` (snapshot file, in-memory copies, live swap, recovery copy) and `DriveStore`.
+- [drive-api.ts](src/services/drive-api.ts): Drive v3 REST for `appDataFolder` (list with paging, multipart upload with size check, download, delete); one token refresh on 401; clear errors for offline, auth, permission, quota and missing files. `fetch` and tokens are injected.
+- [export.ts](src/services/export.ts): CSV and JSON by date range, scope and categories; one row per effect on a money location, side + company on every row, per-side per-currency totals, company fiscal years with assumption sources, obligations and distributions.
+- `domain/money.ts`: `formatDecimal` (machine-readable amounts). `domain/dates.ts`: `formatTimestamp`.
+
+**App**
+- [lib/backup-engine.ts](src/lib/backup-engine.ts): the engine on expo-sqlite (`VACUUM INTO` → open + `serializeAsync`; `deserializeDatabaseAsync`; `backupDatabaseAsync` into the open connection; `money-tracker-recovery.db`). Works on Android and in the web build.
+- [lib/google-auth.ts](src/lib/google-auth.ts) (+ `.web.ts` stub): configure with the web client ID and `drive.appdata`, silent session restore, sign in (cancel returns quietly; missing Drive scope is requested), sign out, token source. [lib/google-errors.ts](src/lib/google-errors.ts): messages for DEVELOPER_ERROR (10), network (7), Play services, expired session.
+- [lib/files.ts](src/lib/files.ts) (+ `.web.ts`): share via the system share sheet (expo-file-system + expo-sharing), pick a file (`File.pickFileAsync`); downloads / file input on web.
+- Settings → **Backup & export** replaces the placeholder: "Backup, not sync" note, Google account (Android-only notice on web), last backup / unsaved changes, Back up now, links.
+- **Backups & restore** screen: Drive history (date, device, "this phone", size, data version, app version, counts, "matches this phone"), Check integrity (download + SHA-256 + SQLite checks), Restore, Delete; keep last 3/5/10/20; Restore from a file; recovery copy with Undo restore.
+- **Export data** screen: period presets or custom dates, personal / company / both, all or selected categories (+ uncategorised), CSV or JSON, live per-side totals, and "Save a full backup file (.db)".
+- Confirmations use `lib/confirm.ts`; new `chooseAction` for the explicit restore choice (back up first / replace).
+- Config: `@react-native-google-signin/google-signin` 16.1.5 (config plugin without options: Android needs no Firebase file), `expo-file-system`, `expo-sharing`, `expo-dev-client`; eas.json `development` profile (development client, internal APK). Package `dev.moneytracker.app` and the EAS keystore are unchanged.
+
+**Verification (2026-10-27)**
+- `npm test`: 176 tests in 13 suites (143 before + 33 new). New coverage:
+  - Snapshot of a file-backed WAL database with a write still only in the `-wal` file: a raw copy of the database file misses it, the snapshot has it, every table (incl. the v3 company tables) and identical rows.
+  - Manifest: size, SHA-256, schema, device, change counter, row counts; Drive metadata round-trip within 124 bytes per property.
+  - Rejected and harmless: flipped byte (hash), truncated file (size), not SQLite, damaged SQLite, a SQLite file that is not Money Tracker, newer schema. The phone's data is byte-identical afterwards.
+  - A v3 backup restores and migrates to v4 (balances and summaries identical), the device keeps its id.
+  - Restore from Drive replaces everything, keeps the device's metadata, leaves no unsaved changes; the recovery copy equals the previous data; undo puts back every row exactly (and is itself undoable); a damaged recovery copy is refused.
+  - Upload verification: a corrupted download discards the upload, records nothing, deletes nothing. Retention keeps N, never the only/newest/verified backup or another device's; failed clean-up does not fail the backup.
+  - Divergence: local changes after a backup, another device, older backup, fresh install, newer backup from another device before backing up.
+  - Every user-data table has change triggers; reads and UI preferences do not count as changes.
+  - Export: decimals from minor units, CSV quoting and formula safety, date range, categories with subcategories, uncategorised, scope; salary transfer as one row per side; personal totals exclude company money and match the real change in personal money.
+  - Drive client: paging, multipart body bytes, upload size check, token refresh, offline/auth/404/quota/permission errors. Sign-in error messages.
+  - v3 → v4 migration on a populated database (incl. obligations and distributions).
+- `npx tsc --noEmit`, `npx eslint src`: clean. `npx expo-doctor`: 20/20. `npx expo export --platform android`: Hermes bundle builds.
+- Web smoke test (Playwright, 412 px viewport, real expo-sqlite/WASM, the Phase 3 smoke-test database, which migrated to v4 on open):
+  - Settings shows "Backup & export" with the "Backup, not sync" note, the Android-only Google account state and "This phone has changes that are not in any backup".
+  - Export: CSV of this year = 4 rows (expense −100, salary +8,000 personal and −8,000 Zenown SARL, adjustment −50); JSON totals personal net +7,850 (incl. income from company 8,000) and company −8,000, never added.
+  - Full backup file (.db): `VACUUM INTO` works on web; the file has schema v4, `integrity_check` ok, all 81 triggers.
+  - Restore from file of a copy with an extra "Restored marker" location (1,234 DH): the explicit-choice prompt appeared (unsaved changes); after replacing, My Money showed 49,884 DH with the marker without reloading; Undo restore brought back 48,650 DH without it. A CSV picked as a backup is refused before anything changes.
+  - Fixed during the smoke test: the export summary left out balance adjustments (in/out did not add up to net); long list subtitles were cut to one line; a non-database file was only rejected after the "replace your data?" prompt; "last restore" after an undo repeated the recovery label.
+- **Not yet verified on Android**: Google sign-in, Drive upload/list/download/delete, share sheet, file picker. See the checklist below.
+
+### Android checks after an EAS development build
+
+Build: `npx eas-cli@latest build --profile development --platform android` (or `preview` for a standalone APK). Then on the S22:
+1. **Sign in**: Settings → Backup & export → Sign in → pick the test Google account → consent. Expect your email and "private app folder on Google Drive". Also try: cancel the picker (no error), airplane mode (network message), sign out / sign in again, and close and reopen the app (still signed in).
+2. **Back up**: add a few transactions incl. a company one → Back up now → "Backup complete … SHA-256 matches". Backups & restore lists it as "this phone", with counts; "Matches this phone"; Check integrity → ✓.
+3. **Change detection**: add an expense → Settings says "changes that are not in any backup". Back up twice more with "Keep last 3", then a fourth time: the oldest one disappears.
+4. **Export**: Export data → CSV and JSON → the share sheet opens; save to Files/Drive and open the CSV in Sheets (accents, negative amounts, side/company columns). Save a full backup file (.db).
+5. **Reinstall and restore**: write down My Money and the company dashboard figures → uninstall → install the same APK → Sign in → Backups & restore → the backup shows another device id → Restore (no unsaved-changes prompt on an empty install) → My Money, location balances, company dashboard, obligations and distributions match. Undo restore → empty again → restore again.
+6. **Divergence**: after restoring, add an expense, then Restore an older backup → the explicit choice appears (Back up this phone first / Replace).
+7. **Restore from a file**: Backups & restore → Restore from a file → pick the saved .db.
+8. If sign-in says DEVELOPER_ERROR: the APK is not signed with the EAS key (SHA-1 in [docs/google-oauth.md](docs/google-oauth.md)).
+
 ## Phase 3 — delivered
 
 **Data (migration v3, see [PLAN.md](PLAN.md#v3--phase-3-implemented))**
@@ -131,6 +187,26 @@ Last updated: 2026-10-27
 - Bugs found and fixed during the smoke test: the distribution screen still offered "Pay 0 DH" once fully paid; "starts on Today" wording; figure 7 repeated all the data-status reasons. Approvals now also keep the simulation they came from.
 - **Still not verified on a physical Android device.**
 
+## Decisions (Phase 4)
+
+- **Restore swaps the data with SQLite's online backup API, not by moving files.** The staged copy is verified and migrated in memory, then copied into the open connection in one SQLite transaction (`backupDatabaseAsync`, `sqlite3_backup_step(-1)`). Closing the connection and moving files next to a WAL file risks applying a stale `-wal` to the new database, and a crash between two moves could leave no database; `SQLiteProvider` also closes its connection without letting the app await it. After the swap the same connection runs migrations and `quick_check`, every query is refreshed, and row counts are compared with the copy (mismatch → the recovery copy is put back).
+- **Older backups are migrated before they reach the phone's data**, on the in-memory copy, so a failed migration changes nothing.
+- **Recovery copy** = a verified snapshot of the current data in `money-tracker-recovery.db`, taken under the same lock as the swap so no write can fall between them. Only the latest is kept. Undo uses the same verified restore path, so it can be undone too.
+- **Device-local metadata survives a restore**: device id, backup log, retention and account stay the phone's own; a Drive restore sets the baseline to that backup (no unsaved changes), a file or the recovery copy keeps the baseline it carries.
+- **Change tracking with triggers** instead of comparing snapshots: exact and cheap. UI preferences (`settings`) do not count as changes. The rule for future tables is in PLAN.md and enforced by a test.
+- **Device id**: random, stored in the database, kept across restores; a reinstall is a new device. Device names come from `expo-device` (model name), never an identifier.
+- **Upload verification downloads the file again** and compares size and SHA-256 (not Drive's MD5), before anything is recorded or deleted.
+- **Retention is per device** (default: keep 10) and never deletes another device's backups, the newest backup or files without a manifest. Old installs' backups therefore stay until deleted by hand; deleting the only valid backup is refused.
+- **Divergence**: restoring over unsaved changes always requires an explicit choice; other-device and older-backup warnings appear only when the phone has data (after a reinstall restoring is the expected path). Backing up warns about a newer backup from another device and about backing up an empty phone while backups exist.
+- **Drive metadata**: scalars in `appProperties`, row counts in `description` (124-byte property limit). Backups are named `money-tracker-<UTC time>.db`.
+- **Google Sign-In**: the free "original" API of `@react-native-google-signin/google-signin` 16 with `webClientId` and `scopes: [drive.appdata]`, `offlineAccess: false`. No tokens are stored by the app; `getTokens` per request, `clearCachedAccessToken` + one retry on 401. The config plugin is used without options: the Firebase-file mods are no-ops without a file, and the iOS URL scheme option is not needed for Android.
+- **Drive REST via `expo/fetch`**, which sends `Uint8Array` bodies as raw bytes (multipart upload in one request; DB sizes are a few MB).
+- **Export rows are postings**, not transactions, so every row has exactly one owner and side totals cannot mix company and personal money. CSV has no totals; JSON totals are per side and per currency (no FX conversion). Company records (obligations, distributions, fiscal-year assumptions) are exported in full, not filtered.
+- **Full backup file** is the raw SQLite snapshot (portable, opens in any SQLite tool); restoring it checks integrity and schema but has no SHA-256 to compare (no manifest travels with it). It is not encrypted; the screen says so.
+- **`expo-file-system`'s own picker** (`File.pickFileAsync`) is used instead of adding `expo-document-picker`.
+- **Web build**: Google Sign-In is replaced by a `.web.ts` stub that says "Android only"; export, backup files, restore from a file and undo work on web (expo-sqlite WASM supports `VACUUM INTO`, serialize/deserialize and backup).
+- **Not changed**: package `dev.moneytracker.app`, the EAS keystore, Google Cloud configuration. `expo-dev-client` was added for the `development` profile; it is not active in preview/production builds.
+
 ## Decisions (Phase 3)
 
 - **Cash-basis P&L from recorded payments.** Invoices and accruals are not tracked; supplier bills can be recorded as obligations. The UI says the accountant's figure may differ.
@@ -166,7 +242,7 @@ Last updated: 2026-10-27
 
 ## Known gaps
 
-- **Not tested on Android hardware.** No JDK/adb on this Mac. On web, `Alert` dialogs in Phase 1–2 screens (delete and over-allocation confirmations) are no-ops in react-native-web; the Phase 3 screens use `lib/confirm.ts` and work on web.
+- **Not tested on Android hardware**, including Google sign-in, Drive and the share sheet (Phase 4 checklist above). No JDK/adb on this Mac. On web, `Alert` dialogs in Phase 1–2 screens (delete and over-allocation confirmations) are no-ops in react-native-web; the Phase 3 screens use `lib/confirm.ts` and work on web.
 - On web, `CI=1 expo start` does not watch files (restart after edits). Fast full-page reloads can hit expo-sqlite's OPFS lock ("createSyncAccessHandle"); a second reload fixes it. Neither affects Android.
 - The custom date range uses the native date picker on Android, and a YYYY-MM-DD text field on web.
 - No allocation history: goal progress over time and historical reservations are not shown.
@@ -174,17 +250,26 @@ Last updated: 2026-10-27
 - Insights are computed on demand (no notifications). Budget threshold warnings appear on Home/Analytics only.
 - Products have no category/unit editor yet (the default unit is taken from the first purchase).
 - Day totals in Activity only add up MAD expenses (unchanged from Phase 1).
-- Release builds are still signed with the debug key (needed before Phase 4).
 - Company money: no accrual accounting (invoices, receivables, depreciation); the P&L is cash basis. No per-transaction TVA split; TVA is entered per year. No IS bracket tables (one rate, minimum or amount). No company balance-sheet items (capital, assets, owner current-account balance) beyond cash, obligations and reserves.
 - The payout estimate (C) uses only the latest fiscal year that has started; profit of earlier years must be entered as retained earnings on that year.
 - Company categories appear in the personal expense/income pickers too (under "More"); the entry screens do not yet filter categories by the chosen location's ownership.
 - On web, the date fields in the fiscal-year form keep their typed text when another field changes them (the end date does not follow a new start date). Native pickers are unaffected.
 - Text inputs have no accessible name beyond their placeholder (pre-existing in `TextField`).
+- Backup is manual: there is no scheduled or automatic backup, and no reminder yet when changes are not backed up (Phase 5 notifications).
+- Backups are not encrypted beyond what Google Drive provides; full backup files shared by the user are plain SQLite.
+- Only one recovery copy is kept (the state before the latest restore or undo).
+- Restoring a file has no SHA-256 check (no manifest travels with a `.db` file); integrity, schema and foreign keys are still checked.
+- Backup history lists the signed-in Google account's backups only; switching accounts shows the other account's folder. Local records of uploads to other accounts are kept but not shown.
+- The OAuth consent screen is in "Testing": Google may ask to sign in again every 7 days until it is published (`drive.appdata` is non-sensitive).
+- No progress bar for upload/download (databases are small; the screen shows "Working…").
+- Attachments are not backed up yet: there are none until Phase 5, which must add them to backups.
 
-## Next (Phase 4 — Google Sign-In & backup)
+## Next (Phase 5 — finishing and extras)
 
-1. Google Sign-In (`@react-native-google-signin/google-signin`, development build) and Drive `appDataFolder` backup/restore as in PLAN.md; OAuth clients are already set up ([docs/google-oauth.md](docs/google-oauth.md)).
-2. Migration v4: `backups`, `sync_meta`. Snapshot with `VACUUM INTO` (includes the v3 company tables); restore checks `user_version` and runs migrations.
-3. CSV/JSON export, including company obligations, distributions and the per-year assumptions with their sources.
-4. A release signing key before distributing builds.
-5. Carried over: allocation history for goal charts; filtering entry-screen categories by ownership; moving Phase 1–2 confirmations to `lib/confirm.ts`.
+1. Run the Phase 4 Android checklist on the S22 (EAS development or preview build), fix what it finds, then publish the OAuth consent screen.
+2. Recurring bills and expected payments (and "bills" reservations in My Money), debts and receivables (migration v5, with change triggers on the new tables).
+3. Receipt attachments, included in backups (snapshot + files, with their SHA-256 in the manifest).
+4. Notifications: budget thresholds, obligations due, "not backed up for N days" reminder.
+5. Optional automatic backup (e.g. after N changes or daily on Wi-Fi), still never overwriting other devices' backups.
+6. Carried over: allocation history for goal charts; filtering entry-screen categories by ownership; moving Phase 1–2 confirmations to `lib/confirm.ts`; accessible names for text inputs.
+7. Performance testing with a few years of data (balances, analytics, snapshot/restore time), security review, UI polish, optional OCR evaluation.
