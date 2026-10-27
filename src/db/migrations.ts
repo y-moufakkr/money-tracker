@@ -1,4 +1,4 @@
-import { DEFAULT_CATEGORIES } from './seed';
+import { COMPANY_CATEGORIES, DEFAULT_CATEGORIES } from './seed';
 import type { Db } from './types';
 
 type Migration = { version: number; name: string; up: (tx: Db) => Promise<void> };
@@ -267,6 +267,166 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX idx_budget_lines_budget ON budget_lines(budget_id);
         CREATE INDEX idx_allocations_account ON goal_allocations(account_id);
       `);
+    },
+  },
+  {
+    version: 3,
+    name: 'company money: fiscal years, obligations, reserves, tax assumptions, distributions',
+    up: async (tx) => {
+      await tx.exec(`
+        ALTER TABLE companies ADD COLUMN tva_mode TEXT NOT NULL DEFAULT 'ttc' CHECK (tva_mode IN ('ttc','ht'));
+
+        CREATE TABLE company_fiscal_years (
+          id TEXT PRIMARY KEY NOT NULL,
+          company_id TEXT NOT NULL REFERENCES companies(id),
+          label TEXT NOT NULL,
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          is_closed INTEGER NOT NULL DEFAULT 0,
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (start_date <= end_date),
+          UNIQUE (company_id, start_date)
+        );
+
+        CREATE TABLE tax_assumptions (
+          id TEXT PRIMARY KEY NOT NULL,
+          fiscal_year_id TEXT NOT NULL UNIQUE REFERENCES company_fiscal_years(id) ON DELETE CASCADE,
+          is_rate_bp INTEGER CHECK (is_rate_bp IS NULL OR is_rate_bp BETWEEN 0 AND 10000),
+          is_minimum_minor INTEGER CHECK (is_minimum_minor IS NULL OR is_minimum_minor >= 0),
+          is_override_minor INTEGER CHECK (is_override_minor IS NULL OR is_override_minor >= 0),
+          is_paid_outside_minor INTEGER NOT NULL DEFAULT 0 CHECK (is_paid_outside_minor >= 0),
+          withholding_rate_bp INTEGER CHECK (withholding_rate_bp IS NULL OR withholding_rate_bp BETWEEN 0 AND 10000),
+          legal_reserve_rate_bp INTEGER CHECK (legal_reserve_rate_bp IS NULL OR legal_reserve_rate_bp BETWEEN 0 AND 10000),
+          tva_collected_minor INTEGER CHECK (tva_collected_minor IS NULL OR tva_collected_minor >= 0),
+          tva_deductible_minor INTEGER CHECK (tva_deductible_minor IS NULL OR tva_deductible_minor >= 0),
+          pre_tracking_revenue_minor INTEGER CHECK (pre_tracking_revenue_minor IS NULL OR pre_tracking_revenue_minor >= 0),
+          pre_tracking_expenses_minor INTEGER CHECK (pre_tracking_expenses_minor IS NULL OR pre_tracking_expenses_minor >= 0),
+          retained_earnings_minor INTEGER NOT NULL DEFAULT 0,
+          source_note TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE tax_items (
+          id TEXT PRIMARY KEY NOT NULL,
+          fiscal_year_id TEXT NOT NULL REFERENCES company_fiscal_years(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK (kind IN ('adjustment','other_tax')),
+          label TEXT NOT NULL,
+          amount_minor INTEGER,
+          rate_bp INTEGER CHECK (rate_bp IS NULL OR rate_bp BETWEEN 0 AND 10000),
+          base TEXT CHECK (base IS NULL OR base IN ('revenue','taxable_profit')),
+          source_note TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (
+            (kind = 'adjustment' AND amount_minor IS NOT NULL AND rate_bp IS NULL AND base IS NULL)
+            OR (kind = 'other_tax' AND amount_minor IS NOT NULL AND amount_minor >= 0 AND rate_bp IS NULL AND base IS NULL)
+            OR (kind = 'other_tax' AND amount_minor IS NULL AND rate_bp IS NOT NULL AND base IS NOT NULL)
+          )
+        );
+
+        CREATE TABLE company_reserves (
+          id TEXT PRIMARY KEY NOT NULL,
+          company_id TEXT NOT NULL REFERENCES companies(id),
+          fiscal_year_id TEXT REFERENCES company_fiscal_years(id),
+          kind TEXT NOT NULL CHECK (kind IN ('legal','statutory','cash')),
+          name TEXT NOT NULL,
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (kind = 'cash' OR fiscal_year_id IS NOT NULL)
+        );
+
+        CREATE TABLE distribution_simulations (
+          id TEXT PRIMARY KEY NOT NULL,
+          company_id TEXT NOT NULL REFERENCES companies(id),
+          fiscal_year_id TEXT REFERENCES company_fiscal_years(id),
+          name TEXT,
+          distributable_minor INTEGER NOT NULL CHECK (distributable_minor >= 0),
+          ownership_bp INTEGER NOT NULL CHECK (ownership_bp BETWEEN 0 AND 10000),
+          withholding_bp INTEGER NOT NULL CHECK (withholding_bp BETWEEN 0 AND 10000),
+          proposed_minor INTEGER NOT NULL CHECK (proposed_minor > 0),
+          owner_gross_minor INTEGER NOT NULL CHECK (owner_gross_minor >= 0),
+          withholding_minor INTEGER NOT NULL CHECK (withholding_minor >= 0),
+          net_minor INTEGER NOT NULL CHECK (net_minor >= 0),
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE distributions (
+          id TEXT PRIMARY KEY NOT NULL,
+          company_id TEXT NOT NULL REFERENCES companies(id),
+          fiscal_year_id TEXT REFERENCES company_fiscal_years(id),
+          simulation_id TEXT REFERENCES distribution_simulations(id) ON DELETE SET NULL,
+          approved_at TEXT NOT NULL,
+          total_gross_minor INTEGER NOT NULL CHECK (total_gross_minor > 0),
+          ownership_bp INTEGER NOT NULL CHECK (ownership_bp BETWEEN 0 AND 10000),
+          owner_gross_minor INTEGER NOT NULL CHECK (owner_gross_minor >= 0),
+          withholding_bp INTEGER NOT NULL CHECK (withholding_bp BETWEEN 0 AND 10000),
+          withholding_minor INTEGER NOT NULL CHECK (withholding_minor >= 0),
+          net_minor INTEGER NOT NULL CHECK (net_minor >= 0),
+          status TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('approved','cancelled')),
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (owner_gross_minor = withholding_minor + net_minor)
+        );
+
+        CREATE TABLE distribution_payments (
+          id TEXT PRIMARY KEY NOT NULL,
+          distribution_id TEXT NOT NULL REFERENCES distributions(id) ON DELETE CASCADE,
+          transaction_id TEXT NOT NULL UNIQUE REFERENCES transactions(id),
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE company_liabilities (
+          id TEXT PRIMARY KEY NOT NULL,
+          company_id TEXT NOT NULL REFERENCES companies(id),
+          fiscal_year_id TEXT REFERENCES company_fiscal_years(id),
+          distribution_id TEXT REFERENCES distributions(id),
+          kind TEXT NOT NULL CHECK (kind IN ('is','tva','payroll','supplier','cnss','withholding','dividend','other')),
+          label TEXT NOT NULL,
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          currency TEXT NOT NULL DEFAULT 'MAD',
+          due_date TEXT,
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE company_liability_payments (
+          id TEXT PRIMARY KEY NOT NULL,
+          liability_id TEXT NOT NULL REFERENCES company_liabilities(id) ON DELETE CASCADE,
+          transaction_id TEXT NOT NULL REFERENCES transactions(id),
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          created_at TEXT NOT NULL,
+          UNIQUE (liability_id, transaction_id)
+        );
+
+        CREATE INDEX idx_fiscal_years_company ON company_fiscal_years(company_id, start_date);
+        CREATE INDEX idx_tax_items_fy ON tax_items(fiscal_year_id);
+        CREATE INDEX idx_reserves_company ON company_reserves(company_id);
+        CREATE INDEX idx_simulations_company ON distribution_simulations(company_id);
+        CREATE INDEX idx_distributions_company ON distributions(company_id, approved_at);
+        CREATE INDEX idx_liabilities_company ON company_liabilities(company_id, due_date);
+        CREATE INDEX idx_liabilities_distribution ON company_liabilities(distribution_id);
+        CREATE INDEX idx_liability_payments_tx ON company_liability_payments(transaction_id);
+        CREATE INDEX idx_accounts_company ON accounts(company_id);
+      `);
+
+      const ts = now();
+      for (const c of COMPANY_CATEGORIES) {
+        await tx.run(
+          `INSERT OR IGNORE INTO categories (id, name, kind, parent_id, icon, color, essential, sort_order, is_system, created_at, updated_at)
+           VALUES (?, ?, ?, NULL, ?, ?, NULL, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories), 1, ?, ?)`,
+          [c.id, c.name, c.kind, c.icon, c.color, ts, ts],
+        );
+      }
     },
   },
 ];

@@ -14,6 +14,16 @@ export const SYSTEM_CATEGORY = {
   bankFees: 'sys-cat-bank-fees',
   otherIncome: 'sys-cat-other-income',
   miscellaneous: 'sys-cat-miscellaneous',
+  // Company (Phase 3). Some of these are not revenue or expenses: see services/company.ts.
+  companyRevenue: 'sys-cat-co-revenue',
+  companyFinancing: 'sys-cat-co-financing',
+  companyPayroll: 'sys-cat-co-payroll',
+  companyCnss: 'sys-cat-co-cnss',
+  companyIs: 'sys-cat-co-is',
+  companyTva: 'sys-cat-co-tva',
+  companyWithholding: 'sys-cat-co-withholding',
+  companyDividendsOther: 'sys-cat-co-dividends-other',
+  companyLoanPrincipal: 'sys-cat-co-loan-principal',
 } as const;
 
 export const DEFAULT_CATEGORIES: SeedCategory[] = [
@@ -51,4 +61,21 @@ export const DEFAULT_CATEGORIES: SeedCategory[] = [
   { id: 'sys-cat-gifts-received', name: 'Gifts received', kind: 'income', icon: 'redeem', color: '#CF4F8F' },
   { id: 'sys-cat-refunds', name: 'Refunds', kind: 'income', icon: 'undo', color: '#D98A1F' },
   { id: SYSTEM_CATEGORY.otherIncome, name: 'Other income', kind: 'income', icon: 'add_card', color: '#8B8F98', system: true },
+];
+
+/**
+ * Added by migration v3 (company money). Kept apart from DEFAULT_CATEGORIES so
+ * migration v1 never changes. All are system categories: the company P&L
+ * depends on them, so they cannot be archived or merged away.
+ */
+export const COMPANY_CATEGORIES: SeedCategory[] = [
+  { id: SYSTEM_CATEGORY.companyPayroll, name: 'Company: salaries & payroll', kind: 'expense', icon: 'badge', color: '#4B44D6', system: true },
+  { id: SYSTEM_CATEGORY.companyCnss, name: 'Company: CNSS contributions', kind: 'expense', icon: 'health_and_safety', color: '#5B6BD6', system: true },
+  { id: SYSTEM_CATEGORY.companyIs, name: 'Company: corporate tax (IS)', kind: 'expense', icon: 'account_balance', color: '#7A3FB0', system: true },
+  { id: SYSTEM_CATEGORY.companyTva, name: 'Company: TVA paid to the state', kind: 'expense', icon: 'receipt', color: '#8A4FC0', system: true },
+  { id: SYSTEM_CATEGORY.companyWithholding, name: 'Company: dividend withholding tax', kind: 'expense', icon: 'percent', color: '#9A5FA0', system: true },
+  { id: SYSTEM_CATEGORY.companyDividendsOther, name: 'Company: dividends to other partners', kind: 'expense', icon: 'groups', color: '#6A5F90', system: true },
+  { id: SYSTEM_CATEGORY.companyLoanPrincipal, name: 'Company: loan principal repaid', kind: 'expense', icon: 'credit_score', color: '#56708A', system: true },
+  { id: SYSTEM_CATEGORY.companyRevenue, name: 'Company: sales & revenue', kind: 'income', icon: 'storefront', color: '#4B44D6', system: true },
+  { id: SYSTEM_CATEGORY.companyFinancing, name: 'Company: capital, loans & refunds (not revenue)', kind: 'income', icon: 'account_balance_wallet', color: '#56708A', system: true },
 ];

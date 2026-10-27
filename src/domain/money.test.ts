@@ -1,9 +1,13 @@
 import {
+  applyBp,
+  bpToInput,
   convertToBase,
+  formatBp,
   formatMoney,
   lineTotal,
   minorToInput,
   parseAmount,
+  parsePercentBp,
   parseQuantity,
   parseRateMicros,
   parseSignedAmount,
@@ -94,5 +98,30 @@ describe('percentShares', () => {
   it('ignores negatives and empties', () => {
     expect(percentShares([])).toEqual([]);
     expect(percentShares([0, -5])).toEqual([0, 0]);
+  });
+});
+
+describe('basis points', () => {
+  it('applies a rate exactly, rounding half away from zero', () => {
+    expect(applyBp(6_000_000, 2000)).toBe(1_200_000);
+    expect(applyBp(3_800_000, 1250)).toBe(475_000);
+    expect(applyBp(1, 5000)).toBe(1);
+    expect(applyBp(-1, 5000)).toBe(-1);
+    expect(applyBp(3, 3333)).toBe(1);
+    expect(applyBp(9_000_000_000_000_000 / 1000, 9999)).toBe(8_999_100_000_000);
+  });
+
+  it('parses and formats percentages', () => {
+    expect(parsePercentBp('20')).toBe(2000);
+    expect(parsePercentBp('12,5')).toBe(1250);
+    expect(parsePercentBp('0.25 %')).toBe(25);
+    expect(parsePercentBp('100')).toBe(10000);
+    expect(parsePercentBp('100.01')).toBeNull();
+    expect(parsePercentBp('1.255')).toBeNull();
+    expect(parsePercentBp('abc')).toBeNull();
+    expect(formatBp(2000)).toBe('20%');
+    expect(formatBp(1250)).toBe('12.5%');
+    expect(formatBp(25)).toBe('0.25%');
+    expect(bpToInput(1250)).toBe('12.5');
   });
 });

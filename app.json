@@ -41,6 +41,17 @@
     "experiments": {
       "typedRoutes": false,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "ae16f48f-5772-46d9-aa0f-39550335142e"
+      }
+    },
+    "owner": "ymoufakkir"
   }
 }

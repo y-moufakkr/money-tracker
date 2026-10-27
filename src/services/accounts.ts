@@ -8,6 +8,7 @@ import type {
   InstrumentKind,
   Ownership,
   PaymentInstrument,
+  TvaMode,
 } from '@/domain/types';
 import { newId, nowISO } from '@/lib/id';
 
@@ -226,7 +227,15 @@ export async function deleteAccount(db: Db, id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Companies
 
-type CompanyRow = { id: string; name: string; legal_form: string; ownership_bp: number; currency: string };
+type CompanyRow = {
+  id: string;
+  name: string;
+  legal_form: string;
+  ownership_bp: number;
+  currency: string;
+  fiscal_year_start_month: number;
+  tva_mode: TvaMode;
+};
 
 const mapCompany = (r: CompanyRow): Company => ({
   id: r.id,
@@ -234,6 +243,8 @@ const mapCompany = (r: CompanyRow): Company => ({
   legalForm: r.legal_form,
   ownershipBp: r.ownership_bp,
   currency: r.currency,
+  fiscalYearStartMonth: r.fiscal_year_start_month,
+  tvaMode: r.tva_mode,
 });
 
 export async function listCompanies(db: Db): Promise<Company[]> {
@@ -259,18 +270,46 @@ export async function createCompany(
   return id;
 }
 
-export async function updateCompany(db: Db, id: string, input: { name: string; ownershipBp: number }): Promise<void> {
+export async function getCompany(db: Db, id: string): Promise<Company | null> {
+  const r = await db.first<CompanyRow>('SELECT * FROM companies WHERE id = ?', [id]);
+  return r ? mapCompany(r) : null;
+}
+
+export async function requireCompany(db: Db, id: string): Promise<Company> {
+  const c = await getCompany(db, id);
+  if (!c) throw new LedgerError('Company not found.');
+  return c;
+}
+
+export type CompanyInput = {
+  name: string;
+  ownershipBp: number;
+  /** Unchanged when omitted. */
+  fiscalYearStartMonth?: number;
+  tvaMode?: TvaMode;
+};
+
+export async function updateCompany(db: Db, id: string, input: CompanyInput): Promise<void> {
   const name = clean(input.name);
   if (!name) throw new LedgerError('Company name is required.');
   if (!Number.isInteger(input.ownershipBp) || input.ownershipBp < 0 || input.ownershipBp > 10000) {
     throw new LedgerError('Ownership must be between 0% and 100%.');
   }
-  await db.run('UPDATE companies SET name = ?, ownership_bp = ?, updated_at = ? WHERE id = ?', [
-    name,
-    input.ownershipBp,
-    nowISO(),
-    id,
-  ]);
+  const month = input.fiscalYearStartMonth;
+  if (month !== undefined && (!Number.isInteger(month) || month < 1 || month > 12)) {
+    throw new LedgerError('The fiscal year must start in a month between 1 and 12.');
+  }
+  if (input.tvaMode !== undefined && input.tvaMode !== 'ttc' && input.tvaMode !== 'ht') {
+    throw new LedgerError('Choose how TVA is recorded.');
+  }
+  await db.transaction(async (tx) => {
+    const existing = await requireCompany(tx, id);
+    await tx.run(
+      `UPDATE companies SET name = ?, ownership_bp = ?, fiscal_year_start_month = ?, tva_mode = ?, updated_at = ?
+       WHERE id = ?`,
+      [name, input.ownershipBp, month ?? existing.fiscalYearStartMonth, input.tvaMode ?? existing.tvaMode, nowISO(), id],
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------

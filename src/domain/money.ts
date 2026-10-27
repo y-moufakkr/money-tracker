@@ -194,3 +194,37 @@ export function percentShares(values: number[]): number[] {
   }
   return floored;
 }
+
+// ---------------------------------------------------------------------------
+// Rates and shares are integer basis points: 2000 = 20%, 25 = 0.25%.
+
+export const BP_100 = 10_000;
+
+/** minor × bp ÷ 10 000, rounded half away from zero, exactly (BigInt). */
+export function applyBp(minor: number, bp: number): number {
+  const num = BigInt(minor) * BigInt(bp);
+  const den = BigInt(BP_100);
+  const q = num / den;
+  const r = num % den;
+  const roundUp = (r < 0n ? -r : r) * 2n >= den;
+  return Number(roundUp ? q + (num < 0n ? -1n : 1n) : q);
+}
+
+/** Parses a user-typed percentage ("20", "12,5", "0.25 %") into basis points. 0–100 %, at most 2 decimals. */
+export function parsePercentBp(input: string): number | null {
+  const s = input.trim().replace(/\s*%$/, '').replace(',', '.');
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return null;
+  const [i, f = ''] = s.split('.');
+  const bp = Number(i) * 100 + Number((f + '00').slice(0, 2));
+  return bp <= BP_100 ? bp : null;
+}
+
+/** 2000 → "20%", 1250 → "12.5%", 25 → "0.25%". */
+export function formatBp(bp: number): string {
+  return `${(bp / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
+}
+
+/** Editable representation: 1250 → "12.5". */
+export function bpToInput(bp: number): string {
+  return (bp / 100).toFixed(2).replace(/\.?0+$/, '');
+}

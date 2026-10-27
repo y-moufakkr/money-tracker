@@ -65,6 +65,9 @@ export type TransactionFilter = {
   productId?: string;
   essential?: EssentialClass;
   ownership?: Ownership;
+  /** Touches an account of this company. */
+  companyId?: string;
+  transferClass?: TransferClass;
   search?: string;
   limit?: number;
   offset?: number;
@@ -172,6 +175,16 @@ export async function listTransactions(db: Db, f: TransactionFilter = {}): Promi
       'EXISTS (SELECT 1 FROM postings px JOIN accounts ax ON ax.id = px.account_id WHERE px.transaction_id = t.id AND ax.ownership = ?)',
     );
     params.push(f.ownership);
+  }
+  if (f.companyId) {
+    where.push(
+      'EXISTS (SELECT 1 FROM postings px JOIN accounts ax ON ax.id = px.account_id WHERE px.transaction_id = t.id AND ax.company_id = ?)',
+    );
+    params.push(f.companyId);
+  }
+  if (f.transferClass) {
+    where.push('t.transfer_class = ?');
+    params.push(f.transferClass);
   }
   if (f.search?.trim()) {
     const q = `%${f.search.trim()}%`;

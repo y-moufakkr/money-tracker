@@ -426,7 +426,8 @@ export async function saveTransfer(db: Db, input: TransferInput, id: string | nu
 
 /**
  * Soft-deletes a transaction (and its linked fee). Balances recalculate
- * automatically. Deleting a reconciliation adjustment re-opens that reconciliation.
+ * automatically. Deleting a reconciliation adjustment re-opens that reconciliation;
+ * deleting a payment re-opens the obligation or distribution it paid.
  */
 export async function deleteTransaction(db: Db, id: string): Promise<void> {
   await db.transaction(async (tx) => {
@@ -434,6 +435,12 @@ export async function deleteTransaction(db: Db, id: string): Promise<void> {
     if (!row || row.deleted_at) throw new LedgerError('Transaction not found.');
     const ts = nowISO();
     await tx.run('UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? OR parent_id = ?', [ts, ts, id, id]);
+    // A deleted payment no longer pays a company obligation or a distribution.
+    await tx.run(
+      'DELETE FROM company_liability_payments WHERE transaction_id IN (SELECT id FROM transactions WHERE id = ? OR parent_id = ?)',
+      [id, id],
+    );
+    await tx.run('DELETE FROM distribution_payments WHERE transaction_id = ?', [id]);
     await tx.run(
       `UPDATE reconciliations SET status = 'open', adjustment_transaction_id = NULL, resolved_at = NULL,
          note = TRIM(COALESCE(note, '') || ' (adjustment deleted ' || ? || ')')

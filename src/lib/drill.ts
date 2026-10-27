@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 
-import type { Ownership, TransactionKind } from '@/domain/types';
+import type { Ownership, TransactionKind, TransferClass } from '@/domain/types';
 import type { EssentialClass, TransactionFilter } from '@/services/queries';
 
 /** Route params understood by the Activity tab. All strings, as Expo Router requires. */
@@ -17,10 +17,13 @@ export type DrillParams = {
   essential?: string;
   kinds?: string;
   ownership?: string;
+  companyId?: string;
+  transferClass?: string;
 };
 
 const DRILL_KEYS: (keyof DrillParams)[] = [
   'label', 'from', 'to', 'categoryId', 'sub', 'tagId', 'merchantId', 'productId', 'accountId', 'essential', 'kinds', 'ownership',
+  'companyId', 'transferClass',
 ];
 
 export function encodeDrill(f: TransactionFilter, label: string): DrillParams {
@@ -36,6 +39,8 @@ export function encodeDrill(f: TransactionFilter, label: string): DrillParams {
   if (f.essential) p.essential = f.essential;
   if (f.kinds?.length) p.kinds = f.kinds.join(',');
   if (f.ownership) p.ownership = f.ownership;
+  if (f.companyId) p.companyId = f.companyId;
+  if (f.transferClass) p.transferClass = f.transferClass;
   return p;
 }
 
@@ -53,6 +58,8 @@ export function decodeDrill(p: DrillParams): TransactionFilter | null {
     essential: (p.essential || undefined) as EssentialClass | undefined,
     kinds: p.kinds ? (p.kinds.split(',') as TransactionKind[]) : undefined,
     ownership: (p.ownership || undefined) as Ownership | undefined,
+    companyId: p.companyId || undefined,
+    transferClass: (p.transferClass || undefined) as TransferClass | undefined,
   };
   return Object.values(f).some((v) => v !== undefined) ? f : null;
 }

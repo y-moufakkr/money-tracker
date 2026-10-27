@@ -68,12 +68,25 @@ export type ExpenseFacts = {
   unconvertedCurrencies: string[];
 };
 
-/** Loads expenses of one ownership scope in a date range, with tags and items. */
-export async function loadExpenseFacts(db: Db, range: DateRange, ownership: Ownership = 'personal'): Promise<ExpenseFacts> {
+/**
+ * Loads expenses of one ownership scope in a date range, with tags and items.
+ * `companyId` narrows business facts to one company; `kind: 'income'` loads
+ * income in the same shape (used by the company P&L).
+ */
+export async function loadExpenseFacts(
+  db: Db,
+  range: DateRange,
+  ownership: Ownership = 'personal',
+  opts: { companyId?: string; kind?: 'expense' | 'income' } = {},
+): Promise<ExpenseFacts> {
   const today = todayISO();
   const rates = await latestRates(db, range.to < today ? range.to : today);
-  const scope = `t.deleted_at IS NULL AND t.kind = 'expense' AND a.ownership = ? AND t.date BETWEEN ? AND ?`;
-  const scopeParams: BindValue[] = [ownership, range.from, range.to];
+  let scope = `t.deleted_at IS NULL AND t.kind = ? AND a.ownership = ? AND t.date BETWEEN ? AND ?`;
+  const scopeParams: BindValue[] = [opts.kind ?? 'expense', ownership, range.from, range.to];
+  if (opts.companyId) {
+    scope += ' AND a.company_id = ?';
+    scopeParams.push(opts.companyId);
+  }
 
   const [rows, txTags, items, itemTags, tags] = await Promise.all([
     db.all<{
@@ -501,10 +514,18 @@ export function breakdown(scoped: ScopedFact[], dimension: Dimension, tags: Expe
   return { rows: list, totalMinor: total, overlapping: sum > total };
 }
 
-/** Drill-down filter for a breakdown row combined with the active analytics filter. */
-export function drillFilter(range: DateRange, filter: AnalyticsFilter | null, row: Partial<TransactionFilter> | null): TransactionFilter | null {
+/**
+ * Drill-down filter for a breakdown row combined with the active analytics filter.
+ * `scope` defaults to personal expenses; the company P&L passes its own.
+ */
+export function drillFilter(
+  range: DateRange,
+  filter: AnalyticsFilter | null,
+  row: Partial<TransactionFilter> | null,
+  scope: Partial<TransactionFilter> = { kinds: ['expense'], ownership: 'personal' },
+): TransactionFilter | null {
   if (row === null) return null;
-  const base: TransactionFilter = { from: range.from, to: range.to, kinds: ['expense'], ownership: 'personal' };
+  const base: TransactionFilter = { from: range.from, to: range.to, ...scope };
   if (filter) {
     switch (filter.kind) {
       case 'category':

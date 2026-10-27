@@ -42,12 +42,18 @@ export type Account = {
 
 export type AccountWithBalance = Account & { balanceMinor: number };
 
+/** How company income/expenses are recorded: TVA included (TTC) or not (HT / not liable). */
+export type TvaMode = 'ttc' | 'ht';
+
 export type Company = {
   id: string;
   name: string;
   legalForm: string;
+  /** Your share of the company in basis points. A share of profit distributions, never a right to company cash. */
   ownershipBp: number;
   currency: string;
+  fiscalYearStartMonth: number;
+  tvaMode: TvaMode;
 };
 
 export type InstrumentKind = 'debit' | 'credit' | 'prepaid';
@@ -218,4 +224,112 @@ export type GoalAllocation = {
   accountId: string;
   /** In the account's currency. */
   amountMinor: number;
+};
+
+// ---------------------------------------------------------------------------
+// Company money (Phase 3). None of these records hold money: balances only
+// change through real transactions.
+
+export type FiscalYear = {
+  id: string;
+  companyId: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  isClosed: boolean;
+  notes: string | null;
+};
+
+/** User-entered figures for one fiscal year. Null means "not entered" (never guessed). */
+export type TaxAssumptions = {
+  fiscalYearId: string;
+  isRateBp: number | null;
+  /** Minimum tax amount, when the year has one (entered, not computed). */
+  isMinimumMinor: number | null;
+  /** Replaces the computed IS when set. */
+  isOverrideMinor: number | null;
+  /** IS already paid for this year but not recorded in the app. */
+  isPaidOutsideMinor: number;
+  withholdingRateBp: number | null;
+  legalReserveRateBp: number | null;
+  /** TVA included in recorded revenue / expenses (TTC companies only). */
+  tvaCollectedMinor: number | null;
+  tvaDeductibleMinor: number | null;
+  /** HT figures for the part of the year before the company accounts were tracked here. */
+  preTrackingRevenueMinor: number | null;
+  preTrackingExpensesMinor: number | null;
+  /** Retained earnings brought forward (+) or losses carried forward (−). */
+  retainedEarningsMinor: number;
+  sourceNote: string | null;
+  updatedAt: string | null;
+};
+
+export type TaxItemKind = 'adjustment' | 'other_tax';
+
+export type TaxItem = {
+  id: string;
+  fiscalYearId: string;
+  kind: TaxItemKind;
+  label: string;
+  /** Adjustment: signed (+ add-back, − deduction). Other tax: fixed amount. */
+  amountMinor: number | null;
+  /** Other tax as a rate of `base`. */
+  rateBp: number | null;
+  base: 'revenue' | 'taxable_profit' | null;
+  sourceNote: string | null;
+};
+
+export type ReserveKind = 'legal' | 'statutory' | 'cash';
+
+export const RESERVE_KINDS: { kind: ReserveKind; label: string; hint: string }[] = [
+  { kind: 'legal', label: 'Legal reserve', hint: 'Part of a year\'s profit that must stay in the company — reduces distributable profit' },
+  { kind: 'statutory', label: 'Statutory / other profit reserve', hint: 'Profit kept by decision or by the statutes — reduces distributable profit' },
+  { kind: 'cash', label: 'Cash set aside', hint: 'Company cash kept for a purpose (runway, investment…) — reduces liquidity' },
+];
+
+export type CompanyReserve = {
+  id: string;
+  companyId: string;
+  fiscalYearId: string | null;
+  kind: ReserveKind;
+  name: string;
+  amountMinor: number;
+  notes: string | null;
+};
+
+export type LiabilityKind = 'is' | 'tva' | 'payroll' | 'supplier' | 'cnss' | 'withholding' | 'dividend' | 'other';
+
+export const LIABILITY_KINDS: { kind: LiabilityKind; label: string; icon: string }[] = [
+  { kind: 'is', label: 'Corporate tax (IS)', icon: 'account_balance' },
+  { kind: 'tva', label: 'TVA', icon: 'receipt' },
+  { kind: 'payroll', label: 'Payroll', icon: 'badge' },
+  { kind: 'cnss', label: 'CNSS', icon: 'health_and_safety' },
+  { kind: 'supplier', label: 'Supplier', icon: 'local_shipping' },
+  { kind: 'withholding', label: 'Dividend withholding', icon: 'percent' },
+  { kind: 'dividend', label: 'Dividends to other partners', icon: 'groups' },
+  { kind: 'other', label: 'Other', icon: 'pending_actions' },
+];
+
+export function liabilityKindLabel(kind: LiabilityKind): string {
+  return LIABILITY_KINDS.find((k) => k.kind === kind)?.label ?? kind;
+}
+
+export type DistributionStatus = 'approved' | 'cancelled';
+
+/** A simulated distribution: never money, never in any balance. */
+export type DistributionSimulation = {
+  id: string;
+  companyId: string;
+  fiscalYearId: string | null;
+  name: string | null;
+  distributableMinor: number;
+  ownershipBp: number;
+  withholdingBp: number;
+  /** Total distribution proposed to all partners. */
+  proposedMinor: number;
+  ownerGrossMinor: number;
+  withholdingMinor: number;
+  netMinor: number;
+  notes: string | null;
+  createdAt: string;
 };
