@@ -161,7 +161,6 @@ describe('schema versions', () => {
     const old = await fileDb(3);
     const ids = await populate(old.db);
     const oldBalances = await accountBalances(old.db);
-    const oldSummary = await moneySummary(old.db);
     // A v3 app has no sync_meta: snapshot it the way the v3 schema stores it.
     old.raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     old.raw.exec(`VACUUM INTO '${old.dir}/v3.db'`);
@@ -174,7 +173,11 @@ describe('schema versions', () => {
     expect(r.schemaVersion).toBe(SCHEMA_VERSION);
     expect((await target.db.first<{ user_version: number }>('PRAGMA user_version'))?.user_version).toBe(SCHEMA_VERSION);
     expect(await accountBalances(target.db)).toEqual(oldBalances);
-    expect((await moneySummary(target.db)).personal).toEqual(oldSummary.personal);
+    // The migrated copy (incl. the v5 transactions rebuild) gives the same personal money.
+    const personal = (await moneySummary(target.db)).personal;
+    expect(personal.liquid).toBe(oldBalances.filter((b) => b.ownership === 'personal').reduce((sum, b) => sum + b.balanceMinor, 0));
+    expect(personal.reservedGoals).toBe(DH(5000));
+    expect(await target.db.all('PRAGMA foreign_key_check')).toEqual([]);
     expect(await target.db.first('SELECT id FROM distributions WHERE id = ?', [ids.distribution])).toEqual({ id: ids.distribution });
     // The phone keeps its own identity; the restored data was never backed up from here.
     const status = await backupStatus(target.db);

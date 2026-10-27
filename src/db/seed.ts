@@ -24,6 +24,8 @@ export const SYSTEM_CATEGORY = {
   companyWithholding: 'sys-cat-co-withholding',
   companyDividendsOther: 'sys-cat-co-dividends-other',
   companyLoanPrincipal: 'sys-cat-co-loan-principal',
+  // Debts (Phase 5). Loan principal is never an expense; the interest paid on it is.
+  loanInterest: 'sys-cat-loan-interest',
 } as const;
 
 export const DEFAULT_CATEGORIES: SeedCategory[] = [
@@ -78,4 +80,12 @@ export const COMPANY_CATEGORIES: SeedCategory[] = [
   { id: SYSTEM_CATEGORY.companyLoanPrincipal, name: 'Company: loan principal repaid', kind: 'expense', icon: 'credit_score', color: '#56708A', system: true },
   { id: SYSTEM_CATEGORY.companyRevenue, name: 'Company: sales & revenue', kind: 'income', icon: 'storefront', color: '#4B44D6', system: true },
   { id: SYSTEM_CATEGORY.companyFinancing, name: 'Company: capital, loans & refunds (not revenue)', kind: 'income', icon: 'account_balance_wallet', color: '#56708A', system: true },
+];
+
+/**
+ * Added by migration v5 (debts). The principal of a loan moves in `debt` transactions and is
+ * never income or expense; interest paid on a debt is a real expense in this category.
+ */
+export const DEBT_CATEGORIES: SeedCategory[] = [
+  { id: SYSTEM_CATEGORY.loanInterest, name: 'Loan interest', kind: 'expense', icon: 'percent', color: '#56708A', system: true },
 ];

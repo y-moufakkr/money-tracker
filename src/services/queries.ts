@@ -541,10 +541,18 @@ export async function listCategories(db: Db, kind: CategoryKind): Promise<Catego
   return rows.map(mapCategory);
 }
 
-export type MerchantSuggestion = Merchant & { useCount: number; lastUsed: string | null };
+export type MerchantSuggestion = Merchant & {
+  useCount: number;
+  lastUsed: string | null;
+  /** The latest transaction of the requested kind at this merchant: where it was paid from, and how much. */
+  last: { accountId: string; instrumentId: string | null; amountMinor: number; currency: string } | null;
+};
 
-/** Merchants by recency of use; filtered by a case-insensitive prefix/substring. */
-export async function suggestMerchants(db: Db, query = '', limit = 8): Promise<MerchantSuggestion[]> {
+/**
+ * Merchants by recency of use (frequency breaks ties); filtered by a case-insensitive
+ * substring, names starting with the query first. `kind` picks which transactions `last` describes.
+ */
+export async function suggestMerchants(db: Db, query = '', limit = 8, kind: 'expense' | 'income' = 'expense'): Promise<MerchantSuggestion[]> {
   const q = query.trim();
   const rows = await db.all<{
     id: string;
@@ -552,23 +560,40 @@ export async function suggestMerchants(db: Db, query = '', limit = 8): Promise<M
     default_category_id: string | null;
     n: number;
     last_used: string | null;
+    last_tx: string | null;
   }>(
-    `SELECT m.id, m.name, m.default_category_id, COUNT(t.id) AS n, MAX(t.date) AS last_used
+    `SELECT m.id, m.name, m.default_category_id, COUNT(t.id) AS n, MAX(t.date) AS last_used,
+       (SELECT t2.id FROM transactions t2 WHERE t2.merchant_id = m.id AND t2.deleted_at IS NULL AND t2.kind = ?
+        ORDER BY t2.date DESC, t2.created_at DESC LIMIT 1) AS last_tx
      FROM merchants m
      LEFT JOIN transactions t ON t.merchant_id = m.id AND t.deleted_at IS NULL
      WHERE m.is_archived = 0 ${q ? 'AND m.name LIKE ?' : ''}
      GROUP BY m.id
-     ORDER BY ${q ? '(m.name LIKE ?) DESC,' : ''} last_used DESC, n DESC, m.name
+     ORDER BY ${q ? '(m.name LIKE ?) DESC,' : ''} last_used IS NULL, last_used DESC, n DESC, m.name
      LIMIT ?`,
-    q ? [`%${q}%`, `${q}%`, limit] : [limit],
+    q ? [kind, `%${q}%`, `${q}%`, limit] : [kind, limit],
   );
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    defaultCategoryId: r.default_category_id,
-    useCount: r.n,
-    lastUsed: r.last_used,
-  }));
+  const ids = rows.map((r) => r.last_tx).filter((x): x is string => !!x);
+  const last = ids.length
+    ? await db.all<{ id: string; account_id: string; instrument_id: string | null; amount_minor: number; currency: string }>(
+        `SELECT t.id, p.account_id, t.instrument_id, t.amount_minor, t.currency FROM transactions t
+         JOIN postings p ON p.transaction_id = t.id AND p.role = 'main'
+         WHERE t.id IN (${ids.map(() => '?').join(',')})`,
+        ids,
+      )
+    : [];
+  const byTx = new Map(last.map((l) => [l.id, l]));
+  return rows.map((r) => {
+    const l = r.last_tx ? byTx.get(r.last_tx) : undefined;
+    return {
+      id: r.id,
+      name: r.name,
+      defaultCategoryId: r.default_category_id,
+      useCount: r.n,
+      lastUsed: r.last_used,
+      last: l ? { accountId: l.account_id, instrumentId: l.instrument_id, amountMinor: l.amount_minor, currency: l.currency } : null,
+    };
+  });
 }
 
 export async function suggestProducts(db: Db, query = '', limit = 6): Promise<{ name: string; unit: string | null; lastUnitPriceMinor: number | null }[]> {

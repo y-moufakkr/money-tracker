@@ -92,13 +92,17 @@ export type OwnerPayout = {
   estimatedNetMinor: number | null;
   estimatedGrossMinor: number | null;
   estimatedWithholdingMinor: number | null;
+  /** Estimated with the simple mode (an entered share of company money), not from profit and tax. */
+  simple: boolean;
   /** Why the estimate is missing or how it was limited. */
   calculation: string[];
   missing: string[];
 };
 
 /**
- * Pure. The estimate starts from the profit not yet distributed in the current
+ * Pure. Simple mode: an entered net share of current company money (approved-unpaid dividends
+ * included in it, never added twice). Detailed mode: the estimate starts from the profit not yet
+ * distributed in the current
  * fiscal year, capped by the cash the company has after its obligations and
  * the IS still to record, then applies your ownership and the withholding rate.
  */
@@ -120,9 +124,33 @@ export function ownerPayout(input: {
     estimatedNetMinor: estimated?.estimatedNetMinor ?? null,
     estimatedGrossMinor: estimated?.estimatedGrossMinor ?? null,
     estimatedWithholdingMinor: estimated?.estimatedWithholdingMinor ?? null,
+    simple: company.payoutMode === 'simple',
     calculation,
     missing,
   });
+  if (company.payoutMode === 'simple') {
+    // One entered net share of what the company holds now, with no tax or profit model. Approved
+    // dividends not yet paid come out of that same money, so they are part of the share, not extra.
+    const bp = company.simplePayoutBp;
+    if (bp === null) {
+      missing.push('Enter your share of the company money (simple estimate) in Settings.');
+      return out(null);
+    }
+    const share = applyBp(Math.max(0, position.cashMinor), bp);
+    const extra = Math.max(0, share - approvedUnpaid);
+    calculation.push(
+      `Simple estimate: ${formatBp(bp)} of current company money ${formatMoney(position.cashMinor)} = ${formatMoney(share)}, taken as your net share.`,
+    );
+    if (approvedUnpaid > 0) {
+      calculation.push(
+        approvedUnpaid >= share
+          ? 'The approved dividends not yet paid already cover it, so nothing is added.'
+          : `Of that, ${formatMoney(approvedUnpaid)} is already approved; ${formatMoney(extra)} comes on top.`,
+      );
+    }
+    calculation.push('No fiscal year, tax or obligation is used. Switch to the detailed estimate when the accountant figures are available.');
+    return out({ estimatedNetMinor: extra, estimatedGrossMinor: null, estimatedWithholdingMinor: null });
+  }
   if (!report) {
     missing.push('Create a fiscal year to estimate distributable profit.');
     return out(null);

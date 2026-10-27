@@ -1,7 +1,17 @@
-import { COMPANY_CATEGORIES, DEFAULT_CATEGORIES } from './seed';
+import { COMPANY_CATEGORIES, DEBT_CATEGORIES, DEFAULT_CATEGORIES } from './seed';
 import type { Db } from './types';
 
-type Migration = { version: number; name: string; up: (tx: Db) => Promise<void> };
+type Migration = {
+  version: number;
+  name: string;
+  up: (tx: Db) => Promise<void>;
+  /**
+   * Rebuilds a table that other tables reference. Foreign keys are switched off around the
+   * migration's transaction (SQLite ignores the pragma inside one), so dropping the old table does
+   * not cascade to its children; `foreign_key_check` must be clean before the transaction commits.
+   */
+  rebuildsTables?: boolean;
+};
 
 const now = () => new Date().toISOString();
 
@@ -508,6 +518,148 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 5,
+    name: 'recurring bills, expected payments, debts and receivables',
+    rebuildsTables: true,
+    up: async (tx) => {
+      // 1. Rebuild `transactions` so its kind CHECK allows 'debt' (loan principal moving in or out).
+      // SQLite cannot alter a CHECK in place. Same columns in the same order; rows copied in rowid
+      // order; indexes and triggers recreated from their stored SQL.
+      const before = await tx.all<{ name: string }>(`SELECT name FROM pragma_table_info('transactions') ORDER BY cid`);
+      const extras = await tx.all<{ sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE tbl_name = 'transactions' AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type, name`,
+      );
+      await tx.exec(`
+        CREATE TABLE transactions_v5 (
+          id TEXT PRIMARY KEY NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('expense','income','transfer','adjustment','debt')),
+          date TEXT NOT NULL,
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          currency TEXT NOT NULL,
+          category_id TEXT REFERENCES categories(id),
+          merchant_id TEXT REFERENCES merchants(id),
+          instrument_id TEXT REFERENCES payment_instruments(id),
+          transfer_class TEXT CHECK (transfer_class IS NULL OR transfer_class IN
+            ('internal','salary','dividend','expense_reimbursement','owner_loan','loan_repayment','capital_contribution','other')),
+          parent_id TEXT REFERENCES transactions(id),
+          note TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          deleted_at TEXT
+        );
+      `);
+      const after = await tx.all<{ name: string }>(`SELECT name FROM pragma_table_info('transactions_v5') ORDER BY cid`);
+      if (JSON.stringify(before) !== JSON.stringify(after)) {
+        throw new Error('transactions has unexpected columns; the v5 rebuild was not applied');
+      }
+      const cols = before.map((c) => c.name).join(', ');
+      const rows = (await tx.first<{ n: number }>('SELECT COUNT(*) AS n FROM transactions'))?.n ?? 0;
+      await tx.exec(`
+        INSERT INTO transactions_v5 (${cols}) SELECT ${cols} FROM transactions ORDER BY rowid;
+        DROP TABLE transactions;
+        ALTER TABLE transactions_v5 RENAME TO transactions;
+      `);
+      for (const e of extras) await tx.exec(e.sql);
+      const copied = (await tx.first<{ n: number }>('SELECT COUNT(*) AS n FROM transactions'))?.n ?? 0;
+      if (copied !== rows) throw new Error(`transactions rebuild copied ${copied} of ${rows} rows`);
+
+      // 2. Debts and receivables (personal). Never money: the money moves in `debt` transactions
+      // (principal, not income or expense) or in linked expenses/income.
+      await tx.exec(`
+        CREATE TABLE debts (
+          id TEXT PRIMARY KEY NOT NULL,
+          direction TEXT NOT NULL CHECK (direction IN ('owe','owed')),
+          counterparty TEXT NOT NULL,
+          principal_minor INTEGER NOT NULL CHECK (principal_minor > 0),
+          currency TEXT NOT NULL DEFAULT 'MAD',
+          start_date TEXT NOT NULL,
+          due_date TEXT,
+          origin_transaction_id TEXT UNIQUE REFERENCES transactions(id),
+          notes TEXT,
+          closed_at TEXT,
+          close_note TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE debt_payments (
+          id TEXT PRIMARY KEY NOT NULL,
+          debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
+          transaction_id TEXT NOT NULL UNIQUE REFERENCES transactions(id),
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE recurring_rules (
+          id TEXT PRIMARY KEY NOT NULL,
+          name TEXT NOT NULL,
+          direction TEXT NOT NULL CHECK (direction IN ('expense','income')),
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          account_id TEXT NOT NULL REFERENCES accounts(id),
+          category_id TEXT REFERENCES categories(id),
+          payee TEXT,
+          debt_id TEXT REFERENCES debts(id) ON DELETE SET NULL,
+          interval_unit TEXT NOT NULL CHECK (interval_unit IN ('day','week','month','year')),
+          interval_count INTEGER NOT NULL DEFAULT 1 CHECK (interval_count BETWEEN 1 AND 366),
+          start_date TEXT NOT NULL,
+          end_date TEXT,
+          remind_days_before INTEGER NOT NULL DEFAULT 3 CHECK (remind_days_before BETWEEN 0 AND 60),
+          reserve INTEGER NOT NULL DEFAULT 1 CHECK (reserve IN (0,1)),
+          is_paused INTEGER NOT NULL DEFAULT 0 CHECK (is_paused IN (0,1)),
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (end_date IS NULL OR end_date >= start_date)
+        );
+
+        CREATE TABLE expected_payments (
+          id TEXT PRIMARY KEY NOT NULL,
+          rule_id TEXT REFERENCES recurring_rules(id) ON DELETE CASCADE,
+          due_date TEXT NOT NULL,
+          name TEXT,
+          direction TEXT CHECK (direction IS NULL OR direction IN ('expense','income')),
+          account_id TEXT REFERENCES accounts(id),
+          category_id TEXT REFERENCES categories(id),
+          amount_minor INTEGER CHECK (amount_minor IS NULL OR amount_minor > 0),
+          reserve INTEGER CHECK (reserve IS NULL OR reserve IN (0,1)),
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','skipped')),
+          transaction_id TEXT UNIQUE REFERENCES transactions(id),
+          resolved_at TEXT,
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (rule_id, due_date),
+          CHECK (rule_id IS NOT NULL OR (name IS NOT NULL AND direction IS NOT NULL AND account_id IS NOT NULL
+                                         AND amount_minor IS NOT NULL AND reserve IS NOT NULL)),
+          CHECK ((status = 'paid') = (transaction_id IS NOT NULL))
+        );
+
+        -- Company payout estimate: 'detailed' (fiscal years, tax assumptions) or 'simple' (one
+        -- entered share of current company money, for when accountant figures are not available).
+        ALTER TABLE companies ADD COLUMN payout_mode TEXT NOT NULL DEFAULT 'detailed' CHECK (payout_mode IN ('detailed','simple'));
+        ALTER TABLE companies ADD COLUMN simple_payout_bp INTEGER CHECK (simple_payout_bp IS NULL OR simple_payout_bp BETWEEN 0 AND 10000);
+
+        CREATE INDEX idx_debt_payments_debt ON debt_payments(debt_id);
+        CREATE INDEX idx_rules_account ON recurring_rules(account_id);
+        CREATE INDEX idx_rules_debt ON recurring_rules(debt_id);
+        CREATE INDEX idx_expected_due ON expected_payments(due_date);
+        CREATE INDEX idx_expected_account ON expected_payments(account_id);
+      `);
+      for (const t of ['debts', 'debt_payments', 'recurring_rules', 'expected_payments']) {
+        await tx.exec(changeTriggersSql(t));
+      }
+
+      const ts = now();
+      for (const c of DEBT_CATEGORIES) {
+        await tx.run(
+          `INSERT OR IGNORE INTO categories (id, name, kind, parent_id, icon, color, essential, sort_order, is_system, created_at, updated_at)
+           VALUES (?, ?, ?, NULL, ?, ?, NULL, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories), 1, ?, ?)`,
+          [c.id, c.name, c.kind, c.icon, c.color, ts, ts],
+        );
+      }
+    },
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -527,10 +679,21 @@ export async function migrate(db: Db, to: number = SCHEMA_VERSION): Promise<numb
   }
   for (const m of MIGRATIONS) {
     if (m.version <= current || m.version > to) continue;
-    await db.transaction(async (tx) => {
-      await m.up(tx);
-      await tx.exec(`PRAGMA user_version = ${m.version}`);
-    });
+    if (m.rebuildsTables) await db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      await db.transaction(async (tx) => {
+        await m.up(tx);
+        if (m.rebuildsTables) {
+          const broken = await tx.all<{ table: string }>('PRAGMA foreign_key_check');
+          if (broken.length) {
+            throw new Error(`Migration v${m.version} left ${broken.length} broken references (first in ${broken[0].table}); nothing was changed.`);
+          }
+        }
+        await tx.exec(`PRAGMA user_version = ${m.version}`);
+      });
+    } finally {
+      if (m.rebuildsTables) await db.exec('PRAGMA foreign_keys = ON');
+    }
   }
   return Math.max(current, Math.min(to, SCHEMA_VERSION));
 }

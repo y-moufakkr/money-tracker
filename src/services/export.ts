@@ -5,8 +5,10 @@ import { PERSONAL_INCOME_TRANSFER_CLASSES, type AccountKind, type Ownership, typ
 import { nowISO } from '@/lib/id';
 import { listCompanies } from './accounts';
 import { getTaxAssumptions, listFiscalYears } from './company';
+import { listDebts } from './debts';
 import { listDistributions } from './distributions';
 import { listLiabilities } from './obligations';
+import { listRules } from './recurring';
 
 /**
  * CSV / JSON export (project.md §24). Every row is one effect of a transaction on one money
@@ -153,6 +155,10 @@ export type ExportTotals = {
   /** Positive. */
   transfersOutMinor: number;
   adjustmentsMinor: number;
+  /** Loan principal received (borrowed, or repaid to me). Not income. */
+  debtInMinor: number;
+  /** Loan principal paid out (lent, or repaid by me), positive. Not expense. */
+  debtOutMinor: number;
   netChangeMinor: number;
   /** Personal side only: salary and dividend transfers received from a company (already in transfersIn). */
   incomeFromCompanyMinor: number;
@@ -163,14 +169,28 @@ export function totalsOf(entries: ExportEntry[]): ExportTotals[] {
   for (const e of entries) {
     let t = by.get(e.currency);
     if (!t) {
-      t = { currency: e.currency, incomeMinor: 0, expensesMinor: 0, transfersInMinor: 0, transfersOutMinor: 0, adjustmentsMinor: 0, netChangeMinor: 0, incomeFromCompanyMinor: 0 };
+      t = {
+        currency: e.currency,
+        incomeMinor: 0,
+        expensesMinor: 0,
+        transfersInMinor: 0,
+        transfersOutMinor: 0,
+        adjustmentsMinor: 0,
+        debtInMinor: 0,
+        debtOutMinor: 0,
+        netChangeMinor: 0,
+        incomeFromCompanyMinor: 0,
+      };
       by.set(e.currency, t);
     }
     t.netChangeMinor += e.amountMinor;
     if (e.kind === 'income') t.incomeMinor += e.amountMinor;
     else if (e.kind === 'expense') t.expensesMinor -= e.amountMinor;
     else if (e.kind === 'adjustment') t.adjustmentsMinor += e.amountMinor;
-    else if (e.amountMinor >= 0) t.transfersInMinor += e.amountMinor;
+    else if (e.kind === 'debt') {
+      if (e.amountMinor >= 0) t.debtInMinor += e.amountMinor;
+      else t.debtOutMinor -= e.amountMinor;
+    } else if (e.amountMinor >= 0) t.transfersInMinor += e.amountMinor;
     else t.transfersOutMinor -= e.amountMinor;
     if (
       e.side === 'personal' &&
@@ -285,6 +305,8 @@ function totalsJson(totals: ExportTotals[], personal: boolean) {
     transfers_in: money(t.transfersInMinor, t.currency),
     transfers_out: money(t.transfersOutMinor, t.currency),
     adjustments: money(t.adjustmentsMinor, t.currency),
+    loan_principal_in: money(t.debtInMinor, t.currency),
+    loan_principal_out: money(t.debtOutMinor, t.currency),
     net_change: money(t.netChangeMinor, t.currency),
     ...(personal ? { income_from_company: money(t.incomeFromCompanyMinor, t.currency) } : {}),
   }));
@@ -312,10 +334,41 @@ export async function exportJson(db: Db, f: ExportFilter, ctx: { appVersion: str
       'amount is a decimal string in the entry currency; amount_minor is the same amount as an integer in minor units.',
       'Each entry is the effect of one transaction on one money location. Personal and company money are listed and totalled separately and are never added together.',
       'Totals are per currency; nothing is converted.',
+      'type "debt" is loan principal moving in or out (borrowed, lent, repaid). It is never income or expense; interest paid is a separate expense.',
     ],
   };
   if (f.scope !== 'company') {
-    out.personal = { entries: personal.map(entryJson), totals: totalsJson(totalsOf(personal), true) };
+    out.personal = {
+      entries: personal.map(entryJson),
+      totals: totalsJson(totalsOf(personal), true),
+      debts: (await listDebts(db)).map((d) => ({
+        direction: d.direction === 'owe' ? 'I owe' : 'owed to me',
+        counterparty: d.counterparty,
+        currency: d.currency,
+        start_date: d.startDate,
+        due_date: d.dueDate,
+        principal: money(d.principalMinor, d.currency),
+        repaid: money(d.paidMinor, d.currency),
+        outstanding: money(d.outstandingMinor, d.currency),
+        status: d.status,
+        closed_at: d.closedAt,
+        repayments: d.payments.map((p) => ({ transaction_id: p.transactionId, date: p.date, type: p.kind, ...money(p.amountMinor, d.currency) })),
+      })),
+      recurring_payments: (await listRules(db)).map((r) => ({
+        name: r.name,
+        type: r.direction,
+        expected: money(r.amountMinor, r.currency),
+        currency: r.currency,
+        account: r.accountName,
+        category: r.categoryName,
+        every: { unit: r.intervalUnit, count: r.intervalCount },
+        first_due: r.startDate,
+        end_date: r.endDate,
+        paused: r.isPaused,
+        next_due: r.next?.dueDate ?? null,
+      })),
+      debt_notes: 'Debts and recurring payments are exported in full (not filtered by date). Expected payments are plans, not money.',
+    };
   }
   if (f.scope !== 'personal') {
     const companies = [];

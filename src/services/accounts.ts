@@ -9,6 +9,7 @@ import type {
   Ownership,
   PaymentInstrument,
   TvaMode,
+  PayoutMode,
 } from '@/domain/types';
 import { newId, nowISO } from '@/lib/id';
 
@@ -218,6 +219,14 @@ export async function deleteAccount(db: Db, id: string): Promise<void> {
     if ((used?.n ?? 0) > 0) {
       throw new LedgerError('This location has history. Archive it instead of deleting it.');
     }
+    const planned = await tx.first<{ n: number }>(
+      `SELECT (SELECT COUNT(*) FROM recurring_rules WHERE account_id = ?)
+            + (SELECT COUNT(*) FROM expected_payments WHERE account_id = ?) AS n`,
+      [id, id],
+    );
+    if ((planned?.n ?? 0) > 0) {
+      throw new LedgerError('Recurring or expected payments use this location. Move or delete them first, or archive the location.');
+    }
     await tx.run('DELETE FROM payment_instruments WHERE account_id = ?', [id]);
     await tx.run('DELETE FROM goal_allocations WHERE account_id = ?', [id]);
     await tx.run('DELETE FROM accounts WHERE id = ?', [id]);
@@ -235,6 +244,8 @@ type CompanyRow = {
   currency: string;
   fiscal_year_start_month: number;
   tva_mode: TvaMode;
+  payout_mode: PayoutMode;
+  simple_payout_bp: number | null;
 };
 
 const mapCompany = (r: CompanyRow): Company => ({
@@ -245,6 +256,8 @@ const mapCompany = (r: CompanyRow): Company => ({
   currency: r.currency,
   fiscalYearStartMonth: r.fiscal_year_start_month,
   tvaMode: r.tva_mode,
+  payoutMode: r.payout_mode,
+  simplePayoutBp: r.simple_payout_bp,
 });
 
 export async function listCompanies(db: Db): Promise<Company[]> {
@@ -287,6 +300,9 @@ export type CompanyInput = {
   /** Unchanged when omitted. */
   fiscalYearStartMonth?: number;
   tvaMode?: TvaMode;
+  /** Unchanged when omitted. 'simple' needs `simplePayoutBp`. */
+  payoutMode?: PayoutMode;
+  simplePayoutBp?: number | null;
 };
 
 export async function updateCompany(db: Db, id: string, input: CompanyInput): Promise<void> {
@@ -302,12 +318,22 @@ export async function updateCompany(db: Db, id: string, input: CompanyInput): Pr
   if (input.tvaMode !== undefined && input.tvaMode !== 'ttc' && input.tvaMode !== 'ht') {
     throw new LedgerError('Choose how TVA is recorded.');
   }
+  if (input.payoutMode !== undefined && input.payoutMode !== 'detailed' && input.payoutMode !== 'simple') {
+    throw new LedgerError('Choose how the payout is estimated.');
+  }
+  const simpleBp = input.simplePayoutBp;
+  if (simpleBp !== undefined && simpleBp !== null && (!Number.isInteger(simpleBp) || simpleBp < 0 || simpleBp > 10000)) {
+    throw new LedgerError('Your share must be between 0% and 100%.');
+  }
   await db.transaction(async (tx) => {
     const existing = await requireCompany(tx, id);
+    const mode = input.payoutMode ?? existing.payoutMode;
+    const bp = simpleBp === undefined ? existing.simplePayoutBp : simpleBp;
+    if (mode === 'simple' && bp === null) throw new LedgerError('Enter your share of the company money for the simple estimate.');
     await tx.run(
-      `UPDATE companies SET name = ?, ownership_bp = ?, fiscal_year_start_month = ?, tva_mode = ?, updated_at = ?
-       WHERE id = ?`,
-      [name, input.ownershipBp, month ?? existing.fiscalYearStartMonth, input.tvaMode ?? existing.tvaMode, nowISO(), id],
+      `UPDATE companies SET name = ?, ownership_bp = ?, fiscal_year_start_month = ?, tva_mode = ?, payout_mode = ?, simple_payout_bp = ?,
+         updated_at = ? WHERE id = ?`,
+      [name, input.ownershipBp, month ?? existing.fiscalYearStartMonth, input.tvaMode ?? existing.tvaMode, mode, bp, nowISO(), id],
     );
   });
 }

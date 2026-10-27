@@ -7,7 +7,9 @@ import { todayISO } from '@/domain/dates';
 import { BASE_CURRENCY, convertToBase } from '@/domain/money';
 import type { Account, AccountWithBalance, Company } from '@/domain/types';
 import { listCompanies, mapAccount } from './accounts';
+import { debtsOutstanding } from './debts';
 import { latestRates } from './fx';
+import { billReservations, expectedIncome } from './recurring';
 
 const BALANCE_SQL = `
   SELECT a.*,
@@ -111,6 +113,16 @@ export function reserveAllocations(
   return out;
 }
 
+/**
+ * Pure. Bills are reserved from what a location holds after its goal reservations, never more:
+ * goals are reserved explicitly by the user, so they keep their money; a shortfall is reported.
+ */
+export function reserveBills(balanceMinor: number, goalsBackedMinor: number, dueMinor: number) {
+  const free = Math.max(0, Math.max(0, balanceMinor) - goalsBackedMinor);
+  const backed = Math.min(dueMinor, free);
+  return { backedMinor: backed, shortMinor: dueMinor - backed };
+}
+
 export async function listAllocations(db: Db): Promise<AllocationRow[]> {
   const rows = await db.all<{ goal_id: string; account_id: string; amount_minor: number }>(
     'SELECT goal_id, account_id, amount_minor FROM goal_allocations ORDER BY created_at',
@@ -130,16 +142,33 @@ export type PersonalSummary = {
   savings: number;
   otherLiquid: number;
   liquid: number;
-  /** Money reserved for savings goals (backed by real balances). Bills come in Phase 5. */
+  /** Everything set aside: reservedGoals + reservedBills. Part of `liquid`, never extra. */
   reserved: number;
+  /** Money reserved for savings goals (backed by real balances). */
+  reservedGoals: number;
+  /** Money reserved for bills due within the horizon (or overdue), after goals, backed by real balances. */
+  reservedBills: number;
   /** Liquid − reserved: money not set aside for anything. */
   available: number;
   /** Reservations only exist in the present; historical views report 0. */
   reservationsApply: boolean;
   /** Accounts holding less than is allocated to goals on them. */
   overAllocated: { account: ConvertedAccount; allocatedMinor: number; shortMinor: number }[];
+  /** Locations that cannot cover their upcoming bills after goal reservations (account currency). */
+  billsShort: { account: ConvertedAccount; dueMinor: number; shortMinor: number }[];
+  /** Credit card debt + debts I owe. */
   liabilities: number;
+  cardLiabilities: number;
+  /** Outstanding debts I owe (loans, money borrowed, purchases on credit). */
+  debtLiabilities: number;
+  /** Money others owe me. Never part of liquid, available or net liquid: it is not cash yet. */
+  receivables: number;
+  /** Liquid − liabilities. */
   netLiquid: number;
+  /** Expected income within the horizon, not yet received. A projection, never added to anything. */
+  expectedIncome: number;
+  /** Debts in a currency with no exchange rate: listed, not in totals. */
+  unconvertedDebts: number;
   accounts: ConvertedAccount[];
   /** Foreign-currency locations with no exchange rate: shown, but not in totals. */
   unconverted: ConvertedAccount[];
@@ -169,11 +198,14 @@ export type MoneySummary = {
  */
 export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<MoneySummary> {
   const current = asOf >= todayISO();
-  const [balances, rates, companies, allocations] = await Promise.all([
+  const [balances, rates, companies, allocations, bills, debts, expected] = await Promise.all([
     accountBalances(db, { asOf, includeArchived: !current }),
     latestRates(db, asOf),
     listCompanies(db),
     current ? listAllocations(db) : Promise.resolve([]),
+    current ? billReservations(db) : Promise.resolve(new Map<string, number>()),
+    debtsOutstanding(db, asOf),
+    current ? expectedIncome(db) : Promise.resolve([]),
   ]);
   const reservations = reserveAllocations(balances, allocations);
   const converted: ConvertedAccount[] = balances.map((a) => ({
@@ -188,11 +220,19 @@ export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<M
     otherLiquid: 0,
     liquid: 0,
     reserved: 0,
+    reservedGoals: 0,
+    reservedBills: 0,
     available: 0,
     reservationsApply: current,
     overAllocated: [],
+    billsShort: [],
     liabilities: 0,
+    cardLiabilities: 0,
+    debtLiabilities: 0,
+    receivables: 0,
     netLiquid: 0,
+    expectedIncome: 0,
+    unconvertedDebts: 0,
     accounts: [],
     unconverted: [],
   };
@@ -214,10 +254,16 @@ export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<M
       const v = a.baseMinor;
       const r = reservations.get(a.id);
       if (r && r.allocatedMinor > 0) {
-        personal.reserved += convertToBase(r.backedMinor, a.currency, rates) ?? 0;
+        personal.reservedGoals += convertToBase(r.backedMinor, a.currency, rates) ?? 0;
         if (r.overAllocatedMinor > 0) {
           personal.overAllocated.push({ account: a, allocatedMinor: r.allocatedMinor, shortMinor: r.overAllocatedMinor });
         }
+      }
+      const due = bills.get(a.id) ?? 0;
+      if (due > 0) {
+        const b = reserveBills(a.balanceMinor, r?.backedMinor ?? 0, due);
+        personal.reservedBills += convertToBase(b.backedMinor, a.currency, rates) ?? 0;
+        if (b.shortMinor > 0) personal.billsShort.push({ account: a, dueMinor: due, shortMinor: b.shortMinor });
       }
       switch (a.kind) {
         case 'bank':
@@ -230,7 +276,7 @@ export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<M
           personal.savings += v;
           break;
         case 'credit_card':
-          if (v < 0) personal.liabilities += -v;
+          if (v < 0) personal.cardLiabilities += -v;
           else personal.otherLiquid += v;
           break;
         default:
@@ -252,8 +298,18 @@ export async function moneySummary(db: Db, asOf: string = todayISO()): Promise<M
     }
   }
 
+  for (const d of debts) {
+    const v = convertToBase(d.outstandingMinor, d.currency, rates);
+    if (v === null) personal.unconvertedDebts += 1;
+    else if (d.direction === 'owe') personal.debtLiabilities += v;
+    else personal.receivables += v;
+  }
+  for (const e of expected) personal.expectedIncome += convertToBase(e.amountMinor, e.currency, rates) ?? 0;
+
   personal.liquid = personal.bank + personal.cash + personal.savings + personal.otherLiquid;
+  personal.reserved = personal.reservedGoals + personal.reservedBills;
   personal.available = personal.liquid - personal.reserved;
+  personal.liabilities = personal.cardLiabilities + personal.debtLiabilities;
   personal.netLiquid = personal.liquid - personal.liabilities;
   for (const c of companyMap.values()) c.total = c.bank + c.cash + c.other;
 

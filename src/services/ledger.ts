@@ -422,12 +422,74 @@ export async function saveTransfer(db: Db, input: TransferInput, id: string | nu
 }
 
 // ---------------------------------------------------------------------------
+// Debt principal (Phase 5)
+
+export type DebtMovementInput = {
+  date: string;
+  accountId: string;
+  /** Principal only, always positive. */
+  amountMinor: number;
+  /** `in`: money arrives (borrowed, or a repayment received). `out`: money leaves (lent, or repaid). */
+  direction: 'in' | 'out';
+  /** Interest paid with an outgoing repayment. Recorded as a linked expense ("Loan interest"). */
+  interestMinor?: number | null;
+  note?: string | null;
+};
+
+/**
+ * Loan principal moving in or out of a personal location. It changes the balance but is never
+ * income or expense: borrowing is not earning, and lending is not spending. Interest paid is a
+ * real expense, recorded as a child transaction like a transfer fee.
+ */
+export async function saveDebtMovement(db: Db, input: DebtMovementInput, id: string | null = null): Promise<string> {
+  assertAmount(input.amountMinor);
+  assertDate(input.date);
+  const interest = input.interestMinor ?? 0;
+  if (interest !== 0) {
+    assertAmount(interest, 'Interest');
+    if (input.direction !== 'out') throw new LedgerError('Interest can only be added to a repayment you make. Record interest you receive as income.');
+  }
+
+  return db.transaction(async (tx) => {
+    if (id) await requireEditable(tx, id, 'debt');
+    const account = await requireAccount(tx, input.accountId);
+    assertUsable(account, input.date);
+    if (account.ownership !== 'personal') {
+      throw new LedgerError('Debts are personal. Company loans are company obligations or classified company transfers.');
+    }
+    if (account.kind === 'credit_card') throw new LedgerError('Choose a location that holds money, not a credit card.');
+
+    const txId = await writeHeader(tx, id, {
+      kind: 'debt',
+      date: input.date,
+      amountMinor: input.amountMinor,
+      currency: account.currency,
+      note: input.note,
+    });
+    await insertPosting(tx, txId, account.id, input.direction === 'in' ? input.amountMinor : -input.amountMinor, 'main');
+    if (interest > 0) {
+      const interestId = await writeHeader(tx, null, {
+        kind: 'expense',
+        date: input.date,
+        amountMinor: interest,
+        currency: account.currency,
+        categoryId: SYSTEM_CATEGORY.loanInterest,
+        parentId: txId,
+        note: `Interest${clean(input.note) ? `: ${clean(input.note)}` : ''}`,
+      });
+      await insertPosting(tx, interestId, account.id, -interest, 'main');
+    }
+    return txId;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Delete
 
 /**
- * Soft-deletes a transaction (and its linked fee). Balances recalculate
+ * Soft-deletes a transaction (and its linked fee or interest). Balances recalculate
  * automatically. Deleting a reconciliation adjustment re-opens that reconciliation;
- * deleting a payment re-opens the obligation or distribution it paid.
+ * deleting a payment re-opens the obligation, distribution, debt or bill it paid.
  */
 export async function deleteTransaction(db: Db, id: string): Promise<void> {
   await db.transaction(async (tx) => {
@@ -441,6 +503,15 @@ export async function deleteTransaction(db: Db, id: string): Promise<void> {
       [id, id],
     );
     await tx.run('DELETE FROM distribution_payments WHERE transaction_id = ?', [id]);
+    // Phase 5: a deleted repayment no longer reduces a debt; a deleted payment re-opens its bill;
+    // a deleted loan disbursement leaves the debt recorded without a money movement.
+    await tx.run('DELETE FROM debt_payments WHERE transaction_id = ?', [id]);
+    await tx.run('UPDATE debts SET origin_transaction_id = NULL, updated_at = ? WHERE origin_transaction_id = ?', [ts, id]);
+    await tx.run(
+      `UPDATE expected_payments SET status = 'pending', transaction_id = NULL, resolved_at = NULL, updated_at = ?
+       WHERE transaction_id = ?`,
+      [ts, id],
+    );
     await tx.run(
       `UPDATE reconciliations SET status = 'open', adjustment_transaction_id = NULL, resolved_at = NULL,
          note = TRIM(COALESCE(note, '') || ' (adjustment deleted ' || ? || ')')

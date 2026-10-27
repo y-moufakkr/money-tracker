@@ -45,6 +45,12 @@ export type AccountWithBalance = Account & { balanceMinor: number };
 /** How company income/expenses are recorded: TVA included (TTC) or not (HT / not liable). */
 export type TvaMode = 'ttc' | 'ht';
 
+/**
+ * How the potential payout to you is estimated: from fiscal years and tax assumptions
+ * ('detailed'), or as one entered net share of current company money ('simple').
+ */
+export type PayoutMode = 'detailed' | 'simple';
+
 export type Company = {
   id: string;
   name: string;
@@ -54,6 +60,9 @@ export type Company = {
   currency: string;
   fiscalYearStartMonth: number;
   tvaMode: TvaMode;
+  payoutMode: PayoutMode;
+  /** Simple mode: your net share of current company money, in basis points (2800 = 28 %). */
+  simplePayoutBp: number | null;
 };
 
 export type InstrumentKind = 'debit' | 'credit' | 'prepaid';
@@ -87,7 +96,8 @@ export type Merchant = {
   defaultCategoryId: string | null;
 };
 
-export type TransactionKind = 'expense' | 'income' | 'transfer' | 'adjustment';
+/** `debt`: loan principal moving in or out of a personal location (Phase 5). Never income or expense. */
+export type TransactionKind = 'expense' | 'income' | 'transfer' | 'adjustment' | 'debt';
 
 export type TransferClass =
   | 'internal'

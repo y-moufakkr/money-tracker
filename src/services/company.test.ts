@@ -23,6 +23,7 @@ import {
   cancelDistribution,
   getDistribution,
   linkDistributionPayment,
+  listDistributions,
   OverDistributionError,
   payDistribution,
   saveSimulation,
@@ -129,7 +130,7 @@ describe('company P&L', () => {
 });
 
 describe('tax estimate with user-entered rates', () => {
-  const company: Company = { id: 'co', name: 'Co', legalForm: 'SARL', ownershipBp: 9500, currency: 'MAD', fiscalYearStartMonth: 1, tvaMode: 'ttc' };
+  const company: Company = { id: 'co', name: 'Co', legalForm: 'SARL', ownershipBp: 9500, currency: 'MAD', fiscalYearStartMonth: 1, tvaMode: 'ttc', payoutMode: 'detailed', simplePayoutBp: null };
   const fiscalYear = { id: 'fy', companyId: 'co', label: '2026', startDate: '2026-01-01', endDate: '2026-12-31', isClosed: false, notes: null };
   const pnl = (revenue: number, costs: number) => ({
     revenue: { totalMinor: revenue, facts: [], tags: new Map() },
@@ -468,6 +469,38 @@ describe('company settings', () => {
     expect(await getCompany(db, companyId)).toMatchObject({ ownershipBp: 9000, fiscalYearStartMonth: 7, tvaMode: 'ht' });
     expect(fiscalYearBounds(7, '2026-03-10')).toEqual({ startDate: '2025-07-01', endDate: '2026-06-30', label: '2025–26' });
     expect(fiscalYearBounds(1, '2026-03-10')).toEqual({ startDate: '2026-01-01', endDate: '2026-12-31', label: '2026' });
+  });
+
+  it('simple payout mode: an entered share of company money, no fiscal-year data needed, never added to personal money', async () => {
+    // No revenue, assumptions or rates entered: the detailed estimate cannot say anything.
+    expect((await companyDashboard(db, companyId))!.payout.estimatedNetMinor).toBeNull();
+    await expect(updateCompany(db, companyId, { name: 'Zenown SARL', ownershipBp: 9500, payoutMode: 'simple' })).rejects.toThrow(/share/);
+    await updateCompany(db, companyId, { name: 'Zenown SARL', ownershipBp: 9500, payoutMode: 'simple', simplePayoutBp: 2800 });
+    expect(await getCompany(db, companyId)).toMatchObject({ payoutMode: 'simple', simplePayoutBp: 2800 });
+
+    const before = await moneySummary(db);
+    const t = await threeTotals(db);
+    const payout = t.c.companies[0].payout;
+    expect(payout).toMatchObject({ simple: true, approvedUnpaidMinor: 0, estimatedNetMinor: DH(28000) });
+    expect(t.c.estimatedNetMinor).toBe(DH(28000));
+    expect(t.a.liquidMinor).toBe(before.personal.liquid);
+    expect((await moneySummary(db)).personal).toEqual(before.personal);
+
+    // An approved dividend comes out of the same company money: part of the 28 %, not extra.
+    await approveDistribution(db, { companyId, fiscalYearId: fyId, approvedAt: today, totalGrossMinor: DH(10000), ownershipBp: 10000, withholdingBp: 0 });
+    let p = (await companyDashboard(db, companyId))!.payout;
+    expect(p.approvedUnpaidMinor).toBe(DH(10000));
+    expect(p.approvedUnpaidMinor + p.estimatedNetMinor!).toBe(DH(28000));
+    // Paying it moves money to you: company money falls, so the share falls with it. Nothing is counted twice.
+    await payDistribution(db, { distributionId: (await listDistributions(db, { companyId }))[0].id, fromAccountId: bank, toAccountId: personal, date: today, amountMinor: DH(10000) });
+    p = (await companyDashboard(db, companyId))!.payout;
+    expect(p.approvedUnpaidMinor).toBe(0);
+    expect(p.estimatedNetMinor).toBe(DH(25200));
+
+    // Back to detailed: the setting is kept, the estimate uses the accounting model again.
+    await updateCompany(db, companyId, { name: 'Zenown SARL', ownershipBp: 9500, payoutMode: 'detailed' });
+    expect(await getCompany(db, companyId)).toMatchObject({ payoutMode: 'detailed', simplePayoutBp: 2800 });
+    expect((await companyDashboard(db, companyId))!.payout.simple).toBe(false);
   });
 
   it('refuses overlapping fiscal years', async () => {
