@@ -29,7 +29,7 @@ export default function GoalsScreen() {
             <Text variant="label" color={c.primary}>
               Reserved for goals
             </Text>
-            <Amount minor={p.reserved} variant="display" />
+            <Amount minor={p.reservedGoals} variant="display" />
             <Divider />
             <Row style={{ justifyContent: 'space-between', marginTop: space.sm }}>
               <View>
@@ -40,7 +40,7 @@ export default function GoalsScreen() {
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text variant="caption" tone="muted">
-                  Unallocated
+                  {p.reservedBills > 0 ? 'Unallocated (after bills)' : 'Unallocated'}
                 </Text>
                 <Amount minor={p.available} variant="bodyStrong" colored="negative-only" />
               </View>

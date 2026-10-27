@@ -156,12 +156,14 @@ export default function CompanyDashboardScreen() {
             />
             <Divider />
             <FigureRow
-              label="7 · Estimated owner share after withholding"
+              label={payout.simple ? '7 · Your share (simple estimate)' : '7 · Estimated owner share after withholding'}
               minor={payout.estimatedNetMinor}
               missing="Not available"
               tint={c.estimate}
               hint={
-                payout.estimatedNetMinor !== null
+                payout.simple
+                  ? (payout.estimatedNetMinor !== null ? payout.calculation.join(' ') : payout.missing.join(' '))
+                  : payout.estimatedNetMinor !== null
                   ? payout.calculation.slice(-2).join(' ')
                   : status && !status.complete
                     ? 'Needs complete figures for the year (see 5).'

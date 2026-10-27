@@ -2,7 +2,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Alert } from 'react-native';
 
-import { CategoryPicker, MerchantField, SourcePicker, type Source } from '@/components/entry-pickers';
+import { categoriesFor, CategoryPicker, MerchantField, SourcePicker, type Source } from '@/components/entry-pickers';
 import { todayISO } from '@/domain/dates';
 import { BASE_CURRENCY, minorToInput, parseAmount } from '@/domain/money';
 import type { AccountWithBalance, Category } from '@/domain/types';
@@ -80,6 +80,7 @@ function IncomeForm({
   const [source, setSource] = useState(initial.source);
   const [categoryId, setCategoryId] = useState(initial.categoryId);
   const [dest, setDest] = useState(initial.dest);
+  const [destTouched, setDestTouched] = useState(!!id);
   const [date, setDate] = useState(initial.date);
   const [note, setNote] = useState(initial.note);
 
@@ -89,7 +90,8 @@ function IncomeForm({
     return txId;
   });
 
-  const account = accounts.find((a) => a.id === dest?.accountId);
+  const destId = dest?.accountId ?? null;
+  const account = accounts.find((a) => a.id === destId);
   const currency = account?.currency ?? BASE_CURRENCY;
   const amountMinor = amount.trim() ? parseAmount(amount, currency) : null;
 
@@ -107,18 +109,28 @@ function IncomeForm({
       <Stack.Screen options={{ title: id ? 'Edit income' : 'Income' }} />
       <FormScreen footer={<Button label="Save income" icon="check" onPress={submit} loading={save.isPending} style={{ flex: 1 }} />}>
         <AmountInput value={amount} onChangeText={setAmount} currency={currency} autoFocus={!id} tint={c.positive} />
-        <CategoryPicker categories={categories} value={categoryId} onChange={setCategoryId} />
         <MerchantField
           label="From (optional)"
           placeholder="e.g. Employer, client name"
           value={source}
+          kind="income"
           onChange={setSource}
           onPick={(m) => {
             setSource(m.name);
             if (!categoryId && m.defaultCategoryId) setCategoryId(m.defaultCategoryId);
+            if (m.last && !destTouched && accounts.some((a) => a.id === m.last!.accountId)) setDest({ accountId: m.last.accountId, instrumentId: null });
           }}
         />
-        <SourcePicker label="Received into" accounts={accounts} value={dest} onChange={setDest} />
+        <SourcePicker
+          label="Received into"
+          accounts={accounts}
+          value={dest}
+          onChange={(d) => {
+            setDest(d);
+            setDestTouched(true);
+          }}
+        />
+        <CategoryPicker categories={categoriesFor(categories, account?.ownership)} value={categoryId} onChange={setCategoryId} />
         {account?.ownership === 'business' && (
           <Banner tone="info" title="Company income">
             This is recorded as company revenue, not personal income. Money the company pays you should be a classified Transfer.

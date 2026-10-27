@@ -2,11 +2,11 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Alert, View } from 'react-native';
 
-import { CategoryPicker, decodeSource, encodeSource, MerchantField, SourcePicker, type Source } from '@/components/entry-pickers';
+import { categoriesFor, CategoryPicker, decodeSource, encodeSource, MerchantField, SourcePicker, type Source } from '@/components/entry-pickers';
 import { draftFromItem, ItemsEditor, parseDraft, type ItemDraft } from '@/components/items-editor';
 import { TagPicker } from '@/components/tag-picker';
 import { todayISO } from '@/domain/dates';
-import { BASE_CURRENCY, minorToInput, parseAmount } from '@/domain/money';
+import { BASE_CURRENCY, formatMoney, minorToInput, parseAmount } from '@/domain/money';
 import type { AccountWithBalance, Category, PaymentInstrument } from '@/domain/types';
 import { useAccountBalances, useCategories, useInstruments, useLedgerMutation, useSetting, useTransaction } from '@/hooks/data';
 import { closeScreen } from '@/lib/navigation';
@@ -14,7 +14,7 @@ import { saveExpense, type ExpenseInput } from '@/services/ledger';
 import { SETTING, setSetting } from '@/services/queries';
 import { AmountInput, DateField, TextField } from '@/ui/fields';
 import { FormScreen } from '@/ui/layout';
-import { Button, EmptyState, Loading, SectionHeader, Text } from '@/ui/primitives';
+import { Button, Chip, EmptyState, Loading, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
 type Initial = {
@@ -109,11 +109,14 @@ function ExpenseForm({
   const [categoryId, setCategoryId] = useState(initial.categoryId);
   const [categoryTouched, setCategoryTouched] = useState(!!id);
   const [source, setSource] = useState(initial.source);
+  const [sourceTouched, setSourceTouched] = useState(!!id);
+  // What was paid last time at the chosen merchant, offered when no amount is typed yet.
+  const [lastAmount, setLastAmount] = useState<{ minor: number; currency: string } | null>(null);
   const [date, setDate] = useState(initial.date);
   const [note, setNote] = useState(initial.note);
   const [items, setItems] = useState(initial.items);
   const [tagIds, setTagIds] = useState(initial.tagIds);
-  const [showMore, setShowMore] = useState(!!initial.note || initial.items.length > 0 || initial.tagIds.length > 0);
+  const [showMore, setShowMore] = useState(!!initial.note || initial.items.length > 0);
 
   const save = useLedgerMutation(async (db, v: { input: ExpenseInput; another: boolean }) => {
     const txId = await saveExpense(db, v.input, id);
@@ -123,7 +126,9 @@ function ExpenseForm({
     return txId;
   });
 
-  const account = accounts.find((a) => a.id === source?.accountId);
+  const sourceId = source?.accountId ?? null;
+  const account = accounts.find((a) => a.id === sourceId);
+  const shownCategories = categoriesFor(categories, account?.ownership);
   const currency = account?.currency ?? BASE_CURRENCY;
   const amountMinor = amount.trim() ? parseAmount(amount, currency) : null;
   const parsedItems = items.map((d) => parseDraft(d, currency));
@@ -164,6 +169,7 @@ function ExpenseForm({
             setMerchant('');
             setCategoryId(null);
             setCategoryTouched(false);
+            setLastAmount(null);
             setNote('');
             setItems([]);
             setTagIds([]);
@@ -188,19 +194,49 @@ function ExpenseForm({
         }>
         <AmountInput value={amount} onChangeText={setAmount} currency={currency} autoFocus={!id} tint={c.negative} />
 
+        {lastAmount && !amount.trim() && (
+          <View style={{ alignItems: 'center', marginTop: -space.sm, marginBottom: space.md }}>
+            <Chip
+              label={`Same as last time: ${formatMoney(lastAmount.minor, lastAmount.currency)}`}
+              icon="history"
+              onPress={() => setAmount(minorToInput(lastAmount.minor, lastAmount.currency))}
+            />
+          </View>
+        )}
+
         <MerchantField
           label="Where?"
           placeholder="e.g. Moul Lkhodra, BIM, Marjane"
           value={merchant}
-          onChange={setMerchant}
+          onChange={(v) => {
+            setMerchant(v);
+            setLastAmount(null);
+          }}
           onPick={(m) => {
             setMerchant(m.name);
             if (!categoryTouched && m.defaultCategoryId) setCategoryId(m.defaultCategoryId);
+            // Paid there before: suggest the same location (unless chosen by hand) and amount.
+            const usable = m.last && accounts.some((a) => a.id === m.last!.accountId);
+            if (m.last && usable && !sourceTouched) {
+              setSource(decodeSource(encodeSource({ accountId: m.last.accountId, instrumentId: m.last.instrumentId }), accounts, cards) ?? source);
+            }
+            setLastAmount(m.last ? { minor: m.last.amountMinor, currency: m.last.currency } : null);
+          }}
+        />
+
+        <SourcePicker
+          label="Paid from"
+          accounts={accounts}
+          cards={cards ?? []}
+          value={source}
+          onChange={(s) => {
+            setSource(s);
+            setSourceTouched(true);
           }}
         />
 
         <CategoryPicker
-          categories={categories}
+          categories={shownCategories}
           value={categoryId}
           onChange={(id) => {
             setCategoryId(id);
@@ -208,15 +244,14 @@ function ExpenseForm({
           }}
         />
 
-        <SourcePicker label="Paid from" accounts={accounts} cards={cards ?? []} value={source} onChange={setSource} />
-
         <DateField value={date} onChange={setDate} />
 
+        <TagPicker value={tagIds} onChange={setTagIds} label="Tags (optional)" />
+
         {!showMore ? (
-          <Button kind="ghost" icon="list_alt" label="Add tags, items, note…" onPress={() => setShowMore(true)} />
+          <Button kind="ghost" icon="list_alt" label="Add items, note…" onPress={() => setShowMore(true)} />
         ) : (
           <View>
-            <TagPicker value={tagIds} onChange={setTagIds} label="Tags (optional)" />
             <TextField label="Note (optional)" value={note} onChangeText={setNote} placeholder="Anything to remember" multiline />
             <SectionHeader title="Items (optional)" />
             <Text variant="caption" tone="muted" style={{ marginBottom: space.sm }}>

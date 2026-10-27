@@ -15,7 +15,7 @@ import { setRate } from '@/services/fx';
 import { ChipGroup, Field, TextField } from '@/ui/fields';
 import { Button, Card, Chip, Divider, ListItem, Row, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
-import type { Company, TvaMode } from '@/domain/types';
+import type { Company, PayoutMode, TvaMode } from '@/domain/types';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -25,10 +25,20 @@ function CompanyEditor({ company }: { company: Company }) {
   const [pct, setPct] = useState(bpToInput(company.ownershipBp));
   const [month, setMonth] = useState(company.fiscalYearStartMonth);
   const [tvaMode, setTvaMode] = useState<TvaMode>(company.tvaMode);
+  const [payoutMode, setPayoutMode] = useState<PayoutMode>(company.payoutMode);
+  const [share, setShare] = useState(company.simplePayoutBp === null ? '' : bpToInput(company.simplePayoutBp));
   // The id travels in the input so the mutation never reads props during render (React Compiler).
   const save = useLedgerMutation((db, v: { id: string; input: CompanyInput }) => updateCompany(db, v.id, v.input));
   const bp = parsePercentBp(pct);
-  const dirty = name !== company.name || bp !== company.ownershipBp || month !== company.fiscalYearStartMonth || tvaMode !== company.tvaMode;
+  const shareBp = share.trim() ? parsePercentBp(share) : null;
+  const shareInvalid = payoutMode === 'simple' && shareBp === null;
+  const dirty =
+    name !== company.name ||
+    bp !== company.ownershipBp ||
+    month !== company.fiscalYearStartMonth ||
+    tvaMode !== company.tvaMode ||
+    payoutMode !== company.payoutMode ||
+    (payoutMode === 'simple' && shareBp !== company.simplePayoutBp);
   const companyId = company.id;
   return (
     <Card style={{ marginBottom: space.sm }}>
@@ -55,18 +65,40 @@ function CompanyEditor({ company }: { company: Company }) {
           <Chip label="None (HT / not liable)" selected={tvaMode === 'ht'} onPress={() => setTvaMode('ht')} color={c.business} />
         </ChipGroup>
       </Field>
+      <Field
+        label="Estimate of your payout"
+        hint="Detailed uses fiscal years, tax rates and obligations. Simple is for when you do not have the accountant figures: you enter which part of the company money is really yours, after tax and everything else.">
+        <ChipGroup>
+          <Chip label="Detailed (accounting)" selected={payoutMode === 'detailed'} onPress={() => setPayoutMode('detailed')} color={c.business} />
+          <Chip label="Simple (a % of company money)" selected={payoutMode === 'simple'} onPress={() => setPayoutMode('simple')} color={c.business} />
+        </ChipGroup>
+      </Field>
+      {payoutMode === 'simple' && (
+        <TextField
+          label="Your net share of current company money"
+          hint="e.g. 28: the potential payout is 28% of what the company accounts hold now. Still an estimate, never added to your personal money."
+          value={share}
+          onChangeText={setShare}
+          keyboardType="decimal-pad"
+          error={shareInvalid ? 'Between 0 and 100' : null}
+          trailing={<Text tone="muted">%</Text>}
+        />
+      )}
       <Row>
         <Button compact kind="ghost" label="Open dashboard" onPress={() => router.push(`/company/${companyId}`)} />
         {dirty && (
           <Button
             compact
             label="Save company"
-            disabled={bp === null}
+            disabled={bp === null || shareInvalid}
             loading={save.isPending}
             onPress={() =>
               bp !== null &&
               save.mutate(
-                { id: companyId, input: { name, ownershipBp: bp, fiscalYearStartMonth: month, tvaMode } },
+                {
+                  id: companyId,
+                  input: { name, ownershipBp: bp, fiscalYearStartMonth: month, tvaMode, payoutMode, ...(payoutMode === 'simple' ? { simplePayoutBp: shareBp } : {}) },
+                },
                 { onError: (e) => notify('Could not save', e.message) },
               )
             }
@@ -103,6 +135,10 @@ export default function SettingsScreen() {
         <ListItem icon="shopping_basket" iconColor={c.primary} title="Products & prices" chevron onPress={() => router.push('/products')} />
         <Divider inset={68} />
         <ListItem icon="savings" iconColor={c.primary} title="Budgets" chevron onPress={() => router.push('/budgets')} />
+        <Divider inset={68} />
+        <ListItem icon="event_repeat" iconColor={c.primary} title="Bills & expected payments" subtitle="Recurring bills, expected income" chevron onPress={() => router.push('/bills')} />
+        <Divider inset={68} />
+        <ListItem icon="handshake" iconColor={c.primary} title="Debts & money owed" subtitle="Loans, money borrowed or lent" chevron onPress={() => router.push('/debts')} />
       </Card>
 
       <SectionHeader title="Companies" />

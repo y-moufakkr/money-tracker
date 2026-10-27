@@ -53,7 +53,7 @@ export function ThreeTotalsCard({ t, compact, aDetail }: { t: ThreeTotals; compa
         <Heading letter="A" title="My actual personal money" color={c.primary} />
         <Amount minor={t.a.liquidMinor} variant="title" />
         <Text variant="caption" tone="muted">
-          {aDetail ? `${aDetail} · ` : ''}Personal accounts only{t.a.netLiquidMinor !== t.a.liquidMinor ? ` · ${formatMoney(t.a.netLiquidMinor)} after card debts` : ''}
+          {aDetail ? `${aDetail} · ` : ''}Personal accounts only{t.a.netLiquidMinor !== t.a.liquidMinor ? ` · ${formatMoney(t.a.netLiquidMinor)} after debts` : ''}
           {t.a.unconvertedCount ? ` · ${t.a.unconvertedCount} foreign location(s) not counted` : ''}
         </Text>
       </Card>
@@ -89,7 +89,17 @@ export function ThreeTotalsCard({ t, compact, aDetail }: { t: ThreeTotals; compa
           <View style={{ gap: 2, marginTop: space.xs }}>
             <Line label="Approved, not yet paid to you (net)" minor={t.c.approvedUnpaidMinor} tint={c.estimate} />
             {t.c.estimatedNetMinor !== null ? (
-              <Line label="Estimated from undistributed profit (net)" minor={t.c.estimatedNetMinor} tint={c.estimate} />
+              <Line
+                label={
+                  t.c.companies.every((x) => x.payout.simple)
+                    ? 'Your share of company money (simple estimate)'
+                    : t.c.companies.some((x) => x.payout.simple)
+                      ? 'Estimated (profit, or your simple share)'
+                      : 'Estimated from undistributed profit (net)'
+                }
+                minor={t.c.estimatedNetMinor}
+                tint={c.estimate}
+              />
             ) : (
               <Row style={{ justifyContent: 'space-between' }}>
                 <Text variant="caption" tone="muted" style={{ flex: 1 }}>

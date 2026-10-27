@@ -4,7 +4,7 @@ import { Alert, ScrollView, View } from 'react-native';
 import { formatDateLabel } from '@/domain/dates';
 import { formatMoney, formatQuantity } from '@/domain/money';
 import { transferClassLabel } from '@/domain/types';
-import { useLedgerMutation, useTags, useTransaction, useTransactionLinks } from '@/hooks/data';
+import { useLedgerMutation, useTags, useTransaction, useTransactionLinks, useTransactionPlans } from '@/hooks/data';
 import { closeScreen } from '@/lib/navigation';
 import { deleteTransaction } from '@/services/ledger';
 import { Amount, Banner, Button, Card, Divider, EmptyState, IconBadge, ListItem, Loading, Row, SectionHeader, Text } from '@/ui/primitives';
@@ -28,6 +28,10 @@ export default function TransactionScreen() {
   const remove = useLedgerMutation((db, txId: string) => deleteTransaction(db, txId));
   const tagNames = new Map((useTags(true).data ?? []).map((g) => [g.id, g.name]));
   const links = useTransactionLinks(id).data;
+  const plans = useTransactionPlans(id).data;
+  // Null-safe locals for closures (React Compiler hoists property reads out of guards).
+  const planDebtId = plans?.debt?.id ?? null;
+  const planRuleId = plans?.expected?.ruleId ?? null;
 
   if (isLoading) return <Loading />;
   if (!t) return <EmptyState icon="error" title="Transaction not found" message="It may have been deleted." />;
@@ -37,9 +41,13 @@ export default function TransactionScreen() {
       ? transferClassLabel(t.transferClass)
       : t.kind === 'adjustment'
         ? 'Balance adjustment'
-        : (t.merchantName ?? t.category?.name ?? (t.kind === 'income' ? 'Income' : 'Expense'));
-  const signed = t.kind === 'expense' ? -t.amountMinor : t.kind === 'adjustment' ? (t.roles.main?.amountMinor ?? 0) : t.amountMinor;
-  const color = t.kind === 'income' ? c.positive : t.kind === 'expense' ? c.text : t.kind === 'adjustment' ? c.warning : c.primary;
+        : t.kind === 'debt'
+          ? (t.note ?? 'Loan')
+          : (t.merchantName ?? t.category?.name ?? (t.kind === 'income' ? 'Income' : 'Expense'));
+  const signed =
+    t.kind === 'expense' ? -t.amountMinor : t.kind === 'adjustment' || t.kind === 'debt' ? (t.roles.main?.amountMinor ?? 0) : t.amountMinor;
+  const color =
+    t.kind === 'income' ? c.positive : t.kind === 'expense' || t.kind === 'debt' ? c.text : t.kind === 'adjustment' ? c.warning : c.primary;
   const isFee = !!t.parentId;
   const editHref =
     t.kind === 'expense' ? `/entry/expense?id=${t.id}` : t.kind === 'income' ? `/entry/income?id=${t.id}` : t.kind === 'transfer' ? `/entry/transfer?id=${t.id}` : null;
@@ -50,10 +58,16 @@ export default function TransactionScreen() {
       t.kind === 'adjustment'
         ? 'The balance check it came from will be re-opened for investigation.'
         : t.fees.length
-          ? 'Its transfer fee will be deleted too. Balances are recalculated.'
+          ? `Its ${t.kind === 'debt' ? 'interest' : 'transfer fee'} will be deleted too. Balances are recalculated.`
           : links && (links.liabilities.length > 0 || links.distributions.length > 0)
             ? 'It pays a company obligation or distribution, which will show as unpaid again. Balances are recalculated.'
-            : 'Balances are recalculated immediately.',
+            : plans?.debt
+              ? plans.debt.role === 'origin'
+                ? 'The debt stays recorded, without this money movement. Balances are recalculated.'
+                : `The debt with ${plans.debt.counterparty} will be outstanding again. Balances are recalculated.`
+              : plans?.expected
+                ? `“${plans.expected.name}” will be unpaid again. Balances are recalculated.`
+                : 'Balances are recalculated immediately.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: () => remove.mutate(t.id, { onSuccess: () => closeScreen(), onError: (e) => Alert.alert('Not possible', e.message) }) },
@@ -64,11 +78,15 @@ export default function TransactionScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: t.kind === 'transfer' ? 'Transfer' : t.kind === 'income' ? 'Income' : t.kind === 'adjustment' ? 'Adjustment' : 'Expense' }} />
+      <Stack.Screen
+        options={{
+          title: t.kind === 'transfer' ? 'Transfer' : t.kind === 'income' ? 'Income' : t.kind === 'adjustment' ? 'Adjustment' : t.kind === 'debt' ? 'Loan' : 'Expense',
+        }}
+      />
       <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, paddingBottom: 64 }}>
         <View style={{ alignItems: 'center', gap: space.sm, paddingVertical: space.lg }}>
           <IconBadge
-            icon={t.kind === 'transfer' ? 'swap_horiz' : t.kind === 'adjustment' ? 'balance' : (t.category?.icon ?? 'receipt_long')}
+            icon={t.kind === 'transfer' ? 'swap_horiz' : t.kind === 'adjustment' ? 'balance' : t.kind === 'debt' ? 'handshake' : (t.category?.icon ?? 'receipt_long')}
             color={t.category?.color ?? color}
             size={56}
           />
@@ -94,10 +112,19 @@ export default function TransactionScreen() {
             </>
           ) : (
             <>
-              <Line label={t.kind === 'income' ? 'Received into' : t.kind === 'adjustment' ? 'Location' : 'Paid from'}>
+              <Line
+                label={
+                  t.kind === 'income' || (t.kind === 'debt' && signed > 0) ? 'Received into' : t.kind === 'adjustment' ? 'Location' : 'Paid from'
+                }>
                 {`${t.roles.main?.name ?? '—'}${t.roles.main?.ownership === 'business' ? ' (company)' : ''}`}
               </Line>
               {t.instrument && <Line label="Card">{`${t.instrument.name}${t.instrument.last4 ? ` · ${t.instrument.last4}` : ''}`}</Line>}
+              {t.kind === 'debt' &&
+                t.fees.map((f) => (
+                  <Line key={f.id} label="Interest (an expense)">
+                    {formatMoney(f.amountMinor, f.currency)}
+                  </Line>
+                ))}
               {t.category && <Line label="Category">{t.category.name}</Line>}
               {t.merchantName && <Line label={t.kind === 'income' ? 'From' : 'Merchant'}>{t.merchantName}</Line>}
             </>
@@ -135,10 +162,51 @@ export default function TransactionScreen() {
           </View>
         )}
 
+        {plans && (plans.debt || plans.expected) && (
+          <View style={{ marginTop: space.md }}>
+            <Card padded={false}>
+              {plans.debt && (
+                <ListItem
+                  icon="handshake"
+                  iconColor={c.primary}
+                  title={
+                    plans.debt.role === 'origin'
+                      ? plans.debt.direction === 'owe'
+                        ? `Borrowed from ${plans.debt.counterparty}`
+                        : `Lent to ${plans.debt.counterparty}`
+                      : `Repays: ${plans.debt.counterparty}`
+                  }
+                  subtitle="Open the debt"
+                  onPress={() => router.push(`/debts/${planDebtId}`)}
+                  chevron
+                />
+              )}
+              {plans.expected && (
+                <ListItem
+                  icon="event_repeat"
+                  iconColor={c.primary}
+                  title={`Pays: ${plans.expected.name}`}
+                  subtitle={`Due ${formatDateLabel(plans.expected.dueDate)}`}
+                  onPress={() => router.push(planRuleId ? `/bills/${planRuleId}` : '/bills')}
+                  chevron
+                />
+              )}
+            </Card>
+          </View>
+        )}
+        {t.kind === 'debt' && (
+          <View style={{ marginTop: space.md }}>
+            <Banner tone="info">
+              Loan principal: it changes the balance but is never counted as income or spending. To change it, edit the debt or delete
+              this movement and record it again.
+            </Banner>
+          </View>
+        )}
+
         {isFee && (
           <View style={{ marginTop: space.md }}>
-            <Banner tone="info">This is the fee of a transfer. Open the transfer to change or delete it.</Banner>
-            <Button kind="ghost" label="Open transfer" onPress={() => router.replace(`/transactions/${t.parentId}`)} />
+            <Banner tone="info">This belongs to another transaction (a transfer fee or loan interest). Open it to change or delete it.</Banner>
+            <Button kind="ghost" label="Open the main transaction" onPress={() => router.replace(`/transactions/${t.parentId}`)} />
           </View>
         )}
         {t.kind === 'adjustment' && (

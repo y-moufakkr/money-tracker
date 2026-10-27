@@ -151,20 +151,51 @@ export default function MoneyScreen() {
               label="Owed (liabilities)"
               minor={p.liabilities}
               tint={p.liabilities > 0 ? c.negative : undefined}
-              hint={p.liabilities > 0 ? 'Credit cards' : undefined}
+              hint={
+                p.liabilities > 0
+                  ? [p.cardLiabilities > 0 ? `Cards ${formatMoney(p.cardLiabilities)}` : null, p.debtLiabilities > 0 ? `Debts ${formatMoney(p.debtLiabilities)}` : null]
+                      .filter(Boolean)
+                      .join(' · ')
+                  : undefined
+              }
+              onPress={() => router.push('/debts')}
+            />
+            <Tile
+              label="Owed to me"
+              minor={p.receivables}
+              hint="Not cash yet, not in any total"
+              onPress={() => router.push('/debts')}
             />
             <Tile
               label="Reserved for goals"
-              minor={p.reserved}
+              minor={p.reservedGoals}
               hint={p.reservationsApply ? 'Part of the total above, not extra' : 'Reservations are only tracked for today'}
               onPress={() => router.push('/goals')}
             />
+            <Tile
+              label="Reserved for bills"
+              minor={p.reservedBills}
+              hint={p.reservationsApply ? 'Due within 30 days' : 'Reservations are only tracked for today'}
+              onPress={() => router.push('/bills')}
+            />
+            {p.expectedIncome > 0 && (
+              <Tile label="Expected income (30 days)" minor={p.expectedIncome} hint="Projection, not counted" tint={c.estimate} onPress={() => router.push('/bills')} />
+            )}
           </View>
           {p.reservationsApply && (
             <Text variant="caption" tone="muted" style={{ marginTop: space.sm }}>
-              Total {formatMoney(p.liquid)} = reserved for goals {formatMoney(p.reserved)} + unallocated {formatMoney(p.available)}. Bills
-              reservations come with recurring payments (Phase 5).
+              Total {formatMoney(p.liquid)} = reserved for goals {formatMoney(p.reservedGoals)} + reserved for bills {formatMoney(p.reservedBills)} +
+              unallocated {formatMoney(p.available)}.
             </Text>
+          )}
+          {p.billsShort.length > 0 && (
+            <View style={{ marginTop: space.md }}>
+              <Banner tone="warning" title="Upcoming bills are not covered">
+                {p.billsShort
+                  .map((b) => `${b.account.name}: ${formatMoney(b.shortMinor, b.account.currency)} short of ${formatMoney(b.dueMinor, b.account.currency)} due (after goal reservations).`)
+                  .join('\n')}
+              </Banner>
+            </View>
           )}
           {p.overAllocated.length > 0 && (
             <View style={{ marginTop: space.md }}>
@@ -191,6 +222,8 @@ export default function MoneyScreen() {
             <QuickAction icon="balance" label="Check balance" onPress={() => router.push('/accounts/pick?next=reconcile')} />
             <QuickAction icon="show_chart" label="Trends" onPress={() => router.push('/trends')} />
             <QuickAction icon="flag" label="Goals" onPress={() => router.push('/goals')} />
+            <QuickAction icon="event_repeat" label="Bills" onPress={() => router.push('/bills')} />
+            <QuickAction icon="handshake" label="Debts" onPress={() => router.push('/debts')} />
             <QuickAction icon="add_card" label="Add location" onPress={() => router.push('/accounts/new')} />
           </ScrollView>
 

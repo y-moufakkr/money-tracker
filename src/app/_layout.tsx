@@ -120,6 +120,13 @@ export default function RootLayout() {
                 <Stack.Screen name="company/approve" options={{ ...modal, title: 'Record approval' }} />
                 <Stack.Screen name="backup/index" options={{ title: 'Backups & restore' }} />
                 <Stack.Screen name="backup/export" options={{ title: 'Export data' }} />
+                <Stack.Screen name="bills/index" options={{ title: 'Bills & expected' }} />
+                <Stack.Screen name="bills/[id]" options={{ title: 'Recurring payment' }} />
+                <Stack.Screen name="bills/edit" options={{ ...modal, title: 'Recurring payment' }} />
+                <Stack.Screen name="bills/occurrence" options={{ ...modal, title: 'Payment' }} />
+                <Stack.Screen name="debts/index" options={{ title: 'Debts & money owed' }} />
+                <Stack.Screen name="debts/[id]" options={{ title: 'Debt' }} />
+                <Stack.Screen name="debts/edit" options={{ ...modal, title: 'Debt' }} />
               </Stack>
             </QueryClientProvider>
           </SQLiteProvider>

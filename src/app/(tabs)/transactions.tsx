@@ -22,6 +22,7 @@ const KINDS: { value: TransactionKind | 'all'; label: string }[] = [
   { value: 'income', label: 'Income' },
   { value: 'transfer', label: 'Transfers' },
   { value: 'adjustment', label: 'Adjustments' },
+  { value: 'debt', label: 'Loans' },
 ];
 const PAGE = 100;
 

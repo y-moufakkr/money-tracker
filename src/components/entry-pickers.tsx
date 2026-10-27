@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { View } from 'react-native';
 
+import { COMPANY_CATEGORIES } from '@/db/seed';
 import { formatMoney } from '@/domain/money';
-import { accountKindIcon, type AccountWithBalance, type Category, type PaymentInstrument } from '@/domain/types';
+import { accountKindIcon, type AccountWithBalance, type Category, type Ownership, type PaymentInstrument } from '@/domain/types';
 import { useMerchantSuggestions } from '@/hooks/data';
 import type { MerchantSuggestion } from '@/services/queries';
 import { ChipGroup, Field, TextField } from '@/ui/fields';
+import { Icon } from '@/ui/icon';
 import { Chip, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
@@ -96,71 +98,186 @@ export function SourcePicker({
   );
 }
 
+const COMPANY_CATEGORY_IDS = new Set(COMPANY_CATEGORIES.map((c) => c.id));
+
+/**
+ * Display-only themes for the built-in top-level categories, so the full list is easy to scan.
+ * They never change data or reports; categories you nest under a parent form their own group.
+ */
+const THEMES: { title: string; ids: string[] }[] = [
+  { title: 'Food', ids: ['sys-cat-groceries', 'sys-cat-meat-fish', 'sys-cat-veg-fruit', 'sys-cat-snacks', 'sys-cat-restaurants', 'sys-cat-coffee'] },
+  { title: 'Transport & car', ids: ['sys-cat-petrol', 'sys-cat-transport', 'sys-cat-car-maintenance'] },
+  { title: 'Home & bills', ids: ['sys-cat-electricity', 'sys-cat-water', 'sys-cat-gas', 'sys-cat-internet', 'sys-cat-mobile', 'sys-cat-house-maintenance'] },
+  { title: 'Health & family', ids: ['sys-cat-healthcare', 'sys-cat-pregnancy', 'sys-cat-child', 'sys-cat-gym', 'sys-cat-supplements'] },
+  { title: 'Shopping & leisure', ids: ['sys-cat-clothes', 'sys-cat-entertainment', 'sys-cat-gifts'] },
+  { title: 'Income', ids: ['sys-cat-salary', 'sys-cat-dividends', 'sys-cat-freelancing', 'sys-cat-distributions', 'sys-cat-gifts-received', 'sys-cat-refunds'] },
+  { title: 'Company', ids: COMPANY_CATEGORIES.map((c) => c.id) },
+  { title: 'Money & other', ids: ['sys-cat-bank-fees', 'sys-cat-loan-interest', 'sys-cat-business', 'sys-cat-miscellaneous', 'sys-cat-other-income'] },
+];
+
+/**
+ * Categories that fit the chosen location: company system categories (payroll, IS, TVA…) only for
+ * company locations, where they come first. Everything else keeps its frequency order.
+ */
+export function categoriesFor(categories: Category[], ownership: Ownership | null | undefined): Category[] {
+  if (ownership === 'business') {
+    return [...categories.filter((c) => COMPANY_CATEGORY_IDS.has(c.id)), ...categories.filter((c) => !COMPANY_CATEGORY_IDS.has(c.id))];
+  }
+  return categories.filter((c) => !COMPANY_CATEGORY_IDS.has(c.id));
+}
+
+/** Lower case without accents, so "cafe" finds "Café". */
+function fold(s: string): string {
+  try {
+    return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  } catch {
+    return s.toLowerCase();
+  }
+}
+
+/**
+ * Most-used categories as chips (the list arrives in order of recent use), plus "All categories":
+ * a search box and the full list grouped under each parent category.
+ */
 export function CategoryPicker({
   categories,
   value,
   onChange,
-  initialCount = 9,
+  initialCount = 8,
+  label = 'Category',
 }: {
   categories: Category[];
   value: string | null;
   onChange: (id: string | null) => void;
   initialCount?: number;
+  label?: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const selectedIndex = categories.findIndex((c) => c.id === value);
-  const visible =
-    expanded || categories.length <= initialCount
-      ? categories
-      : [
-          ...categories.slice(0, initialCount),
-          ...(selectedIndex >= initialCount ? [categories[selectedIndex]] : []),
-        ];
+  const c = useColors();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const byId = new Map(categories.map((x) => [x.id, x]));
+  const selected = value ? (byId.get(value) ?? null) : null;
+  const top = categories.slice(0, initialCount);
+  const quick = selected && !top.some((x) => x.id === selected.id) ? [selected, ...top.slice(0, initialCount - 1)] : top;
+  const fullName = (x: Category) => {
+    const parent = x.parentId ? byId.get(x.parentId) : null;
+    return parent ? `${parent.name} › ${x.name}` : x.name;
+  };
+  const pick = (id: string) => {
+    onChange(value === id ? null : id);
+    setOpen(false);
+    setQuery('');
+  };
+  const chip = (x: Category, text = x.name) => (
+    <Chip key={x.id} label={text} icon={x.icon ?? undefined} color={x.color ?? undefined} selected={value === x.id} onPress={() => pick(x.id)} />
+  );
+
+  const q = fold(query.trim());
+  const matches = q ? categories.filter((x) => fold(fullName(x)).includes(q)) : [];
+  // Groups: each top-level category with its subcategories, alphabetical; orphans under "Other".
+  const parents = categories.filter((x) => !x.parentId || !byId.has(x.parentId)).sort((a, b) => a.name.localeCompare(b.name));
+  const childrenOf = (id: string) => categories.filter((x) => x.parentId === id).sort((a, b) => a.name.localeCompare(b.name));
+  const withChildren = parents.filter((p) => childrenOf(p.id).length > 0);
+  const single = parents.filter((p) => childrenOf(p.id).length === 0);
+  const themed = THEMES.map((t) => ({ title: t.title, items: single.filter((x) => t.ids.includes(x.id)) })).filter((g) => g.items.length > 0);
+  const unthemed = single.filter((x) => !THEMES.some((t) => t.ids.includes(x.id)));
+
   return (
-    <Field label="Category">
+    <Field label={label}>
       <ChipGroup>
-        {visible.map((cat) => (
+        {quick.map((x) => chip(x))}
+        {categories.length > quick.length && (
           <Chip
-            key={cat.id}
-            label={cat.name}
-            icon={cat.icon ?? undefined}
-            color={cat.color ?? undefined}
-            selected={value === cat.id}
-            onPress={() => onChange(value === cat.id ? null : cat.id)}
+            label={open ? 'Close' : `All categories (${categories.length})`}
+            icon={open ? 'expand_less' : 'search'}
+            selected={open}
+            onPress={() => {
+              setOpen((v) => !v);
+              setQuery('');
+            }}
           />
-        ))}
-        {categories.length > initialCount && (
-          <Chip label={expanded ? 'Less' : `More (${categories.length - initialCount})`} icon={expanded ? 'expand_less' : 'expand_more'} onPress={() => setExpanded((v) => !v)} />
         )}
       </ChipGroup>
+      {open && (
+        <View style={{ marginTop: space.md, padding: space.md, borderRadius: 12, borderWidth: 1, borderColor: c.border, gap: space.sm }}>
+          <TextField
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search categories"
+            accessibilityLabel="Search categories"
+            autoFocus
+            leading={<Icon name="search" size={18} color={c.textFaint} />}
+          />
+          {q ? (
+            matches.length === 0 ? (
+              <Text tone="muted">No category matches “{query.trim()}”.</Text>
+            ) : (
+              <ChipGroup>{matches.map((x) => chip(x, fullName(x)))}</ChipGroup>
+            )
+          ) : (
+            <>
+              {withChildren.map((p) => (
+                <View key={p.id} style={{ gap: 6 }}>
+                  <Text variant="caption" tone="muted">
+                    {p.name}
+                  </Text>
+                  <ChipGroup>
+                    {chip(p, `${p.name} (all)`)}
+                    {childrenOf(p.id).map((x) => chip(x))}
+                  </ChipGroup>
+                </View>
+              ))}
+              {[...themed, ...(unthemed.length ? [{ title: themed.length || withChildren.length ? 'Your categories' : '', items: unthemed }] : [])].map((g) => (
+                <View key={g.title || 'all'} style={{ gap: 6 }}>
+                  {!!g.title && (
+                    <Text variant="caption" tone="muted">
+                      {g.title}
+                    </Text>
+                  )}
+                  <ChipGroup>{g.items.map((x) => chip(x))}</ChipGroup>
+                </View>
+              ))}
+            </>
+          )}
+        </View>
+      )}
     </Field>
   );
 }
 
-/** Free-text merchant with recent/matching suggestions. */
+/**
+ * Free-text merchant / payer with suggestions from history: the places used most recently before
+ * anything is typed, then matches while typing.
+ */
 export function MerchantField({
   label,
   placeholder,
   value,
   onChange,
   onPick,
+  kind = 'expense',
 }: {
   label: string;
   placeholder: string;
   value: string;
   onChange: (v: string) => void;
   onPick: (m: MerchantSuggestion) => void;
+  kind?: 'expense' | 'income';
 }) {
-  const { data } = useMerchantSuggestions(value);
-  const exact = data?.some((m) => m.name.toLowerCase() === value.trim().toLowerCase());
-  const suggestions = (data ?? []).filter((m) => !exact || m.name.toLowerCase() !== value.trim().toLowerCase());
+  const { data } = useMerchantSuggestions(value, kind);
+  const typed = value.trim().toLowerCase();
+  const exact = data?.some((m) => m.name.toLowerCase() === typed);
+  const suggestions = (data ?? []).filter((m) => m.name.toLowerCase() !== typed);
   return (
     <View>
       <TextField label={label} placeholder={placeholder} value={value} onChangeText={onChange} autoCapitalize="words" returnKeyType="done" />
       {suggestions.length > 0 && !exact && (
-        <View style={{ marginTop: -space.sm, marginBottom: space.lg }}>
+        <View style={{ marginTop: -space.sm, marginBottom: space.lg, gap: 6 }}>
+          <Text variant="caption" tone="faint">
+            {typed ? 'Matching places' : 'Recent'}
+          </Text>
           <ChipGroup>
-            {suggestions.slice(0, 6).map((m) => (
+            {suggestions.slice(0, 8).map((m) => (
               <Chip key={m.id} label={m.name} icon="store" onPress={() => onPick(m)} />
             ))}
           </ChipGroup>

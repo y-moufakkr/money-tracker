@@ -29,6 +29,18 @@ import { companyAnalytics } from '@/services/company-analytics';
 import { getDistribution, listDistributions, listSimulations, unmatchedDividendTransfers } from '@/services/distributions';
 import { getLiability, listLiabilities, paymentCandidates, transactionLinks } from '@/services/obligations';
 import { companyDashboard, threeTotals } from '@/services/overview';
+import { getDebt, listDebts, repaymentCandidates, transactionDebt } from '@/services/debts';
+import {
+  getOccurrence,
+  getRule,
+  listOccurrences,
+  listRules,
+  occurrenceCandidates,
+  transactionExpected,
+  upcomingOccurrences,
+  type OccurrenceQuery,
+  type OccurrenceRef,
+} from '@/services/recurring';
 
 const wrapped = new WeakMap<SQLiteDatabase, Db>();
 
@@ -119,11 +131,11 @@ export function useCategories(kind: CategoryKind) {
   return useQuery({ queryKey: [LEDGER, 'categories', kind], queryFn: () => listCategories(db, kind) });
 }
 
-export function useMerchantSuggestions(query: string) {
+export function useMerchantSuggestions(query: string, kind: 'expense' | 'income' = 'expense') {
   const db = useDb();
   return useQuery({
-    queryKey: [LEDGER, 'merchants', query],
-    queryFn: () => suggestMerchants(db, query),
+    queryKey: [LEDGER, 'merchants', query, kind],
+    queryFn: () => suggestMerchants(db, query, 8, kind),
     placeholderData: (prev) => prev,
   });
 }
@@ -320,6 +332,64 @@ export function useCompanyAnalytics(companyId: string | undefined, range: DateRa
 export function useTransactionLinks(transactionId: string | undefined) {
   const db = useDb();
   return useQuery({ queryKey: [LEDGER, 'transaction-links', transactionId], queryFn: () => transactionLinks(db, transactionId!), enabled: !!transactionId });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: recurring payments and debts
+
+export function useRules() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'rules'], queryFn: () => listRules(db) });
+}
+
+export function useRule(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'rule', id], queryFn: () => getRule(db, id!), enabled: !!id });
+}
+
+export function useOccurrences(q: OccurrenceQuery, enabled = true) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'occurrences', q], queryFn: () => listOccurrences(db, q), enabled });
+}
+
+export function useUpcoming(days?: number) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'upcoming', days ?? 'default'], queryFn: () => upcomingOccurrences(db, days) });
+}
+
+export function useOccurrence(ref: OccurrenceRef | null) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'occurrence', ref], queryFn: () => getOccurrence(db, ref!), enabled: !!ref });
+}
+
+export function useOccurrenceCandidates(ref: OccurrenceRef | null) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'occurrence-candidates', ref], queryFn: () => occurrenceCandidates(db, ref!), enabled: !!ref });
+}
+
+export function useDebts() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'debts'], queryFn: () => listDebts(db) });
+}
+
+export function useDebt(id: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'debt', id], queryFn: () => getDebt(db, id!), enabled: !!id });
+}
+
+export function useRepaymentCandidates(debtId: string | undefined) {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'repayment-candidates', debtId], queryFn: () => repaymentCandidates(db, debtId!), enabled: !!debtId });
+}
+
+/** The debt and the expected payment a transaction is linked to, if any. */
+export function useTransactionPlans(transactionId: string | undefined) {
+  const db = useDb();
+  return useQuery({
+    queryKey: [LEDGER, 'transaction-plans', transactionId],
+    queryFn: async () => ({ debt: await transactionDebt(db, transactionId!), expected: await transactionExpected(db, transactionId!) }),
+    enabled: !!transactionId,
+  });
 }
 
 /** Runs a write against the DB and refreshes every ledger-derived query on success. */

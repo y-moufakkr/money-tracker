@@ -2,13 +2,14 @@ import { router } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { BudgetCard } from '@/components/budget-card';
+import { OccurrenceRow } from '@/components/occurrence-row';
 import { BarRow } from '@/components/breakdown';
 import { InsightList } from '@/components/insight-list';
 import { ThreeTotalsCard } from '@/components/three-totals';
 import { TransactionRow } from '@/components/transaction-row';
 import { formatMonthLabel, presetRange, todayISO } from '@/domain/dates';
 import { formatMoney } from '@/domain/money';
-import { useBudgetStatuses, useInsights, useMoneySummary, usePeriodSummary, useThreeTotals, useTransactions } from '@/hooks/data';
+import { useBudgetStatuses, useInsights, useMoneySummary, usePeriodSummary, useThreeTotals, useTransactions, useUpcoming } from '@/hooks/data';
 import { openTransactions } from '@/lib/drill';
 import { NO_CATEGORY } from '@/services/queries';
 import { Icon } from '@/ui/icon';
@@ -38,6 +39,7 @@ export default function HomeScreen() {
   const insights = useInsights();
   const budgets = useBudgetStatuses();
   const totals = useThreeTotals();
+  const upcoming = useUpcoming();
 
   const refreshing = summary.isRefetching || period.isRefetching;
   const refresh = () => {
@@ -47,6 +49,7 @@ export default function HomeScreen() {
     insights.refetch();
     budgets.refetch();
     totals.refetch();
+    upcoming.refetch();
   };
 
   if (summary.isLoading || period.isLoading) {
@@ -61,11 +64,23 @@ export default function HomeScreen() {
   const s = period.data!;
   const hasCompany = summary.data!.companies.length > 0;
   const personalDetail =
-    (p.reserved > 0 ? `Reserved for goals ${formatMoney(p.reserved)} · Unallocated ${formatMoney(p.available)}` : `Available ${formatMoney(p.available)}`) +
+    (p.reserved > 0
+      ? [
+          p.reservedGoals > 0 ? `Goals ${formatMoney(p.reservedGoals)}` : null,
+          p.reservedBills > 0 ? `Bills ${formatMoney(p.reservedBills)}` : null,
+          `Unallocated ${formatMoney(p.available)}`,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : `Available ${formatMoney(p.available)}`) +
     (p.liabilities > 0 ? ` · Owed ${formatMoney(p.liabilities)}` : '') +
+    (p.receivables > 0 ? ` · Owed to me ${formatMoney(p.receivables)}` : '') +
     (p.unconverted.length > 0 ? ` · ${p.unconverted.length} foreign location(s) not counted` : '');
   const noAccounts = p.accounts.length === 0 && summary.data!.companies.length === 0;
   const topCats = s.byCategory.slice(0, 5);
+  // Overdue first, then bills inside their reminder window, then the next few.
+  const attention = (upcoming.data ?? []).filter((o) => o.overdue || o.dueSoon);
+  const soon = attention.length > 0 ? attention.slice(0, 4) : (upcoming.data ?? []).slice(0, 3);
 
   return (
     <TabScreen
@@ -125,6 +140,23 @@ export default function HomeScreen() {
             <Text variant="caption" tone="muted" style={{ marginTop: space.sm }}>
               Income includes {formatMoney(s.companyIncomeMinor)} salary/dividends paid by your company.
             </Text>
+          )}
+
+          {soon.length > 0 && (
+            <>
+              <SectionHeader
+                title={attention.length > 0 ? `Bills needing attention · ${attention.length}` : 'Coming up'}
+                action={{ label: 'All bills', onPress: () => router.push('/bills') }}
+              />
+              <Card padded={false}>
+                {soon.map((o, i) => (
+                  <View key={o.key}>
+                    {i > 0 && <Divider inset={68} />}
+                    <OccurrenceRow o={o} />
+                  </View>
+                ))}
+              </Card>
+            </>
           )}
 
           {(budgets.data ?? []).length > 0 && (

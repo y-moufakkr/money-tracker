@@ -13,14 +13,14 @@ function describe(t: TransactionListItem) {
       return {
         icon: t.category?.icon ?? 'shopping_bag',
         color: t.category?.color ?? '#8B8F98',
-        title: t.merchantName ?? t.category?.name ?? 'Expense',
+        title: t.merchantName ?? t.category?.name ?? t.note ?? 'Expense',
         subtitle: [t.merchantName ? t.category?.name : null, t.account?.name].filter(Boolean).join(' · '),
       };
     case 'income':
       return {
         icon: t.category?.icon ?? 'add_card',
         color: t.category?.color ?? '#13804B',
-        title: t.merchantName ?? t.category?.name ?? 'Income',
+        title: t.merchantName ?? t.category?.name ?? t.note ?? 'Income',
         subtitle: [t.merchantName ? t.category?.name : null, t.account?.name].filter(Boolean).join(' · '),
       };
     case 'transfer':
@@ -36,6 +36,13 @@ function describe(t: TransactionListItem) {
         color: '#A85A06',
         title: 'Balance adjustment',
         subtitle: t.account?.name ?? '',
+      };
+    case 'debt':
+      return {
+        icon: 'handshake',
+        color: '#56708A',
+        title: t.note ?? ((t.account?.amountMinor ?? 0) >= 0 ? 'Loan money in' : 'Loan money out'),
+        subtitle: [t.account?.name, 'loan, not income or spending'].filter(Boolean).join(' · '),
       };
   }
 }
@@ -71,9 +78,9 @@ export function TransactionRow({
   } else if (t.kind === 'income') {
     minor = t.amountMinor;
     colored = true;
-  } else if (t.kind === 'adjustment') {
+  } else if (t.kind === 'adjustment' || t.kind === 'debt') {
     minor = t.account?.amountMinor ?? 0;
-    colored = true;
+    colored = t.kind === 'adjustment';
   } else {
     minor = t.amountMinor;
     colored = false;
