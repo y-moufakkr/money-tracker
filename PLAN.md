@@ -29,10 +29,15 @@ src/
     accounts/          new, [id] detail, [id]/edit, [id]/reconcile
     entry/             expense, income, transfer (create + edit via ?id=)
     transactions/[id]  transaction detail
+    company/           [id] SARL dashboard, [id]/tax, [id]/obligations, [id]/simulate, [id]/distributions,
+                       [id]/analytics, obligation/[id], distribution/[id], modals (assumptions, fiscal-year,
+                       obligation-edit, reserve-edit, approve)
   db/                  Db interface, expo adapter, migrations, seed data
   domain/              pure logic: money (minor units, parsing, formatting, FX), dates (Africa/Casablanca), types
   services/            ledger (money writes), balances (all balance + reservation maths), queries (lists),
-                       catalog (categories/merchants/products/tags), goals, budgets, analytics, insights
+                       catalog (categories/merchants/products/tags), goals, budgets, analytics, insights,
+                       company (fiscal years, assumptions, reserves, P&L, tax estimate), obligations,
+                       distributions, overview (SARL dashboard + three totals), company-analytics
   hooks/               TanStack Query hooks wrapping services
   ui/                  design system: theme tokens, Text, Card, Button, Chip, inputs, Icon, FAB
   test/                node:sqlite adapter for tests
@@ -139,18 +144,39 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 - **Analytics** load personal expenses once as "facts" (`services/analytics.ts`) and derive every breakdown with pure functions. Each breakdown row carries the `TransactionFilter` that lists exactly its transactions.
 - **Merges** (category, merchant, product, tag) re-point all history in one SQLite transaction, then remove the source. Item lines keep the name/unit they were recorded with. System categories cannot be archived or merged away.
 
+### v3 — Phase 3 (implemented)
+
+- `companies` gains `tva_mode ∈ ttc|ht` (default `ttc`): whether recorded company amounts include TVA.
+- `company_fiscal_years(id, company_id, label, start_date, end_date, is_closed, notes)`, UNIQUE(company_id, start_date); overlaps are refused by the service.
+- `tax_assumptions(id, fiscal_year_id UNIQUE → CASCADE, is_rate_bp, is_minimum_minor, is_override_minor, is_paid_outside_minor, withholding_rate_bp, legal_reserve_rate_bp, tva_collected_minor, tva_deductible_minor, pre_tracking_revenue_minor, pre_tracking_expenses_minor, retained_earnings_minor, source_note)`. One typed row per fiscal year instead of the planned key/value table. **NULL means "not entered"**, never 0.
+- `tax_items(id, fiscal_year_id → CASCADE, kind ∈ adjustment|other_tax, label, amount_minor, rate_bp, base ∈ revenue|taxable_profit, source_note)`: taxable-profit adjustments (signed) and other configurable taxes (amount, or rate × base).
+- `company_reserves(id, company_id, fiscal_year_id, kind ∈ legal|statutory|cash, name, amount_minor, notes)`, CHECK profit reserves have a fiscal year.
+- `distribution_simulations(id, company_id, fiscal_year_id, name, distributable_minor, ownership_bp, withholding_bp, proposed_minor, owner_gross_minor, withholding_minor, net_minor, notes)`.
+- `distributions(id, company_id, fiscal_year_id, simulation_id, approved_at, total_gross_minor, ownership_bp, owner_gross_minor, withholding_bp, withholding_minor, net_minor, status ∈ approved|cancelled, notes)`, CHECK owner_gross = withholding + net.
+- `distribution_payments(id, distribution_id → CASCADE, transaction_id UNIQUE)`: replaces the planned single `paid_transaction_id`, so a distribution can be paid in several transfers; UNIQUE keeps a transfer from paying two distributions.
+- `company_liabilities(id, company_id, fiscal_year_id, distribution_id, kind ∈ is|tva|payroll|supplier|cnss|withholding|dividend|other, label, amount_minor, currency, due_date, notes)`. Two kinds were added to the plan: `withholding` and `dividend` (other partners' shares), created by an approval. There is no `paid` column: paid/outstanding are derived from payments.
+- `company_liability_payments(id, liability_id → CASCADE, transaction_id, amount_minor, UNIQUE(liability_id, transaction_id))`: the part of a real transaction that pays an obligation.
+- Nine system categories (`sys-cat-co-*`): payroll, CNSS, IS, TVA paid, dividend withholding, dividends to other partners, loan principal (expense); sales & revenue, capital/loans/refunds (income). They live in `COMPANY_CATEGORIES` (not `DEFAULT_CATEGORIES`) so migration v1 never changes.
+- Indexes on fiscal years, tax items, reserves, simulations, distributions, liabilities, liability payments (by transaction) and `accounts(company_id)`.
+- Rates and shares are integer basis points (`2000` = 20 %), applied with `applyBp` (BigInt, half away from zero) in `domain/money.ts`.
+
 ### Later migrations (planned)
 
-- **v3 (Phase 3)**: `company_fiscal_years`, `company_liabilities(kind ∈ is|tva|payroll|supplier|cnss|other, amount, due, paid)`, `company_reserves`, `tax_assumptions(fiscal_year, key, value, source_note)`, `distribution_simulations`, `distributions(approved_at, gross, withholding, net, paid_transaction_id)`
 - **v4 (Phase 4)**: `backups(id, created_at, drive_file_id, schema_version, sha256, size, device)`, `sync_meta(device_id, last_backup_at)`
 - **v5 (Phase 5)**: `recurring_rules`, `expected_payments`, `debts(direction ∈ owe|owed, counterparty, principal, due)`, `debt_payments`, `attachments(transaction_id, uri, mime, sha256)`
 
 ## Company module (Phase 3) rules
 
-- Bank balance ≠ profit ≠ distributable profit ≠ approved distribution ≠ received distribution. Each is a separate figure.
-- Tax rates are user-entered per fiscal year, with an optional "assumption source" note. Built-in defaults are added only when verified for that fiscal year. Every estimate is editable.
-- Simulator output is labelled **"Estimated potential personal payout — not yet personal money"**, stored separately, and excluded from personal totals.
-- The three-totals overview (A personal, B company, C potential) never sums A + B + C.
+- Bank balance ≠ accounting profit ≠ distributable profit ≠ approved distribution ≠ received distribution. Each is a separate, labelled figure. Ownership % is a share of what the partners distribute, never a right to company cash.
+- **No tax rate is built in.** IS, withholding, legal-reserve and other rates are user-entered per fiscal year with a "source" note. A missing input makes the estimate say what is missing; nothing is guessed. Every estimate step shows its calculation and whether it is recorded, entered or calculated.
+- **P&L** (cash basis, per company, from `loadExpenseFacts(…, 'business', { companyId })`): revenue = income except "capital, loans & refunds"; costs = expenses except IS, TVA paid, dividend withholding, dividends to other partners and loan principal, **plus** company → you `salary` and `expense_reimbursement` transfers (a company cost; personal income/refund on your side — one movement, counted once in each entity). Dividends, owner loans, loan repayments, capital contributions, internal and other transfers, and balance adjustments are never revenue or cost; they are listed separately with their reason and drill-down.
+- **TVA**: companies are `ttc` (recorded bank amounts include TVA) or `ht` (no TVA in recorded amounts). For `ttc`, the TVA collected and the deductible TVA of the year are user-entered and removed from revenue/expenses; TVA paid to the state is an obligation, never a cost.
+- **Data sufficiency**: accounting profit is shown only when the year has recorded (or entered) activity, every company location existed from the start of the year (or pre-tracking figures were entered), TVA amounts are entered for `ttc`, and every currency converts. Otherwise the dashboard says "Not enough data" and why.
+- **Tax estimate**: revenue HT − costs HT = accounting profit; + adjustments = taxable profit; × IS rate (or the higher minimum, or an entered amount) = IS; − advances (payments linked to that year's IS obligations + IS paid outside the app) = IS still to pay; profit − IS − other taxes = profit after tax; − profit reserves (recorded, or rate × profit after tax) ± retained earnings brought forward = distributable profit (never below 0); − approved distributions of that year = not yet distributed. Earlier years only count through the retained-earnings figure, so no profit is counted twice.
+- **Obligations** are paid by real company expenses/transfers linked to them. Outstanding = amount − linked payments. A transaction's linked parts never exceed its amount, and a transfer that pays a distribution cannot also pay an obligation. Liquidity after obligations = cash − outstanding obligations (incl. approved dividends owed to you and company card debt) − cash reserves, so paying a linked obligation leaves it unchanged. Tax payments that are not linked are flagged (they would otherwise be subtracted twice). Estimated IS not yet recorded as an obligation is shown, not subtracted.
+- **Distributions**: simulated (stored apart, no effect) → approved (a company obligation: your net share, plus withholding and other partners' shares as linked obligations; still not your money) → paid by a linked company → personal transfer classed `dividend`, which is the only thing that adds to A and to personal income. Paying above the approved net throws `OverDistributionError` unless explicitly confirmed. Warnings: dividend transfers with no approval, approvals not paid, over-payment, and linked transfers whose class changed.
+- **Three totals**: A = personal liquid money; B = per company, liquidity after obligations (with cash, obligations and reserves shown); C = approved-unpaid net + an estimate from the current year's undistributed profit, capped by cash after obligations and unrecorded IS, × ownership − withholding. They are separate figures; no A + B + C exists anywhere. Scenarios ("if the approved distribution is paid") show A rising by exactly what company cash loses.
+- Simulator and payout output is labelled **"Estimated potential personal payout — not yet personal money."**
 
 ## Backup (Phase 4)
 
@@ -162,6 +188,6 @@ Migrations are numbered and tracked with `PRAGMA user_version`. Each migration r
 
 1. Core ledger, accounts, cards, income/expense/transfer, reconciliation, fast entry, itemized purchases, history, My Money ✅
 2. Analytics, catalog and price history, tags, budgets, goals and allocations, historical balances, insights ✅
-3. SARL dashboard, obligations, tax estimates, distribution simulator ← **next**
-4. Google Sign-In, Drive backup/restore, CSV/JSON export
+3. SARL dashboard, obligations, tax estimates, distribution simulator ✅
+4. Google Sign-In, Drive backup/restore, CSV/JSON export ← **next**
 5. Recurring bills, debts, attachments, notifications, OCR evaluation, polish
