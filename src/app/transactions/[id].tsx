@@ -251,6 +251,7 @@ export default function TransactionScreen() {
                       <Text variant="caption" tone="muted">
                         {[
                           i.lineKind !== 'product' ? i.lineKind : null,
+                          i.estimated ? 'estimated' : null,
                           i.quantityMilli !== null ? `${formatQuantity(i.quantityMilli)}${i.unit ? ` ${i.unit}` : ''}` : null,
                           i.unitPriceMinor !== null ? `× ${formatMoney(i.unitPriceMinor, t.currency)}${i.unit ? `/${i.unit}` : ''}` : null,
                         ]
@@ -259,8 +260,10 @@ export default function TransactionScreen() {
                         {i.tagIds.length > 0 ? ` · ${i.tagIds.map((id) => `#${tagNames.get(id) ?? '?'}`).join(' ')}` : ''}
                       </Text>
                     </View>
-                    <Text color={i.lineKind === 'discount' ? c.positive : undefined}>
-                      {i.totalMinor === null ? '—' : `${i.lineKind === 'discount' ? '−' : ''}${formatMoney(i.totalMinor, t.currency)}`}
+                    <Text color={i.lineKind === 'discount' ? c.positive : i.estimated ? c.textMuted : undefined}>
+                      {i.totalMinor === null
+                        ? '—'
+                        : `${i.lineKind === 'discount' ? '−' : i.estimated ? '≈ ' : ''}${formatMoney(i.totalMinor, t.currency)}`}
                     </Text>
                   </Row>
                 </View>

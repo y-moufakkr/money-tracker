@@ -733,9 +733,10 @@ export async function loadProductLines(
     currency: string;
     product_id: string;
     product_name: string;
+    estimated: number;
   }>(
     `SELECT pi.id AS item_id, t.id AS transaction_id, t.date, t.merchant_id, m.name AS merchant_name, pi.quantity_milli,
-       pi.unit, pi.total_minor, pi.unit_price_minor, a.currency, pi.product_id, pr.name AS product_name
+       pi.unit, pi.total_minor, pi.unit_price_minor, a.currency, pi.product_id, pr.name AS product_name, pi.estimated
      FROM purchase_items pi
      JOIN products pr ON pr.id = pi.product_id
      JOIN transactions t ON t.id = pi.transaction_id
@@ -756,10 +757,11 @@ export async function loadProductLines(
         date: r.date,
         merchantId: r.merchant_id,
         merchantName: r.merchant_name,
-        quantityMilli: r.quantity_milli,
+        // An estimated total is spending, not a price: no quantity or unit price is paired with it.
+        quantityMilli: r.estimated ? null : r.quantity_milli,
         unit: r.unit,
         totalMinor: conv(r.total_minor, r.currency),
-        unitPriceMinor: conv(r.unit_price_minor, r.currency),
+        unitPriceMinor: r.estimated ? null : conv(r.unit_price_minor, r.currency),
       }),
       productId: r.product_id,
       productName: r.product_name,

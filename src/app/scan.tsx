@@ -3,13 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, View } from 'react-native';
 
 import { todayISO } from '@/domain/dates';
-import { parseReceipt, type ReceiptParse } from '@/domain/receipt-parse';
+import { parseReceipt, type OcrResult, type ReceiptParse } from '@/domain/receipt-parse';
 import { useDb } from '@/hooks/data';
 import { notify } from '@/lib/confirm';
 import { putDraft } from '@/lib/receipt-drafts';
 import { ocrAvailable, recognizeReceipt } from '@/lib/receipt-ocr';
 import { pickReceiptPhoto } from '@/lib/receipt-photo';
-import { listMerchantNames } from '@/services/queries';
+import { listMerchantNames, listProductNames } from '@/services/queries';
 import { Banner, Button, IconBadge, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
@@ -36,13 +36,17 @@ export default function ScanScreen() {
     setReading(true);
     let parse: ReceiptParse | null = null;
     let error: string | null = null;
+    let ocr: OcrResult | null = null;
     try {
-      const lines = await recognizeReceipt(photo.uri);
-      if (lines) parse = parseReceipt(lines, { today: todayISO(), merchants: await listMerchantNames(db) });
+      ocr = await recognizeReceipt(photo.uri);
+      if (ocr) {
+        const [merchants, products] = await Promise.all([listMerchantNames(db), listProductNames(db)]);
+        parse = parseReceipt(ocr.lines, { today: todayISO(), merchants, products });
+      }
     } catch (e) {
       error = `The receipt could not be read (${(e as Error).message}). Fill in the expense by hand; the photo is attached.`;
     }
-    const id = putDraft({ photo, parse, error });
+    const id = putDraft({ photo, parse, error, ocr });
     router.replace(`/entry/expense?draft=${encodeURIComponent(id)}`);
   };
 
@@ -71,7 +75,7 @@ export default function ScanScreen() {
               <IconBadge icon="document_scanner" color={c.primary} size={64} />
               <Text variant="heading">Scan a receipt</Text>
               <Text tone="muted" style={{ textAlign: 'center' }}>
-                The amount, date and store are filled in for you to check. Nothing is saved until you tap Save, and the photo stays
+                The amount, date, store and items are filled in for you to check. Nothing is saved until you tap Save, and the photo stays
                 attached to the expense.
               </Text>
             </View>

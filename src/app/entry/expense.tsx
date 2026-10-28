@@ -1,6 +1,6 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { View } from 'react-native';
+import { Platform, Share, View } from 'react-native';
 
 import { categoriesFor, CategoryPicker, decodeSource, encodeSource, MerchantField, SourcePicker, type Source } from '@/components/entry-pickers';
 import { draftFromItem, ItemsEditor, newItemDraft, parseDraft, type ItemDraft } from '@/components/items-editor';
@@ -8,14 +8,14 @@ import { PhotoStrip, PhotoThumb, ReceiptHint } from '@/components/receipt-photos
 import { TagPicker } from '@/components/tag-picker';
 import { formatDateLabel, todayISO } from '@/domain/dates';
 import { BASE_CURRENCY, formatMoney, formatQuantity, minorToInput, parseAmount } from '@/domain/money';
-import type { ReceiptItem } from '@/domain/receipt-parse';
+import { receiptAmount, type ReceiptItem } from '@/domain/receipt-parse';
 import type { AccountWithBalance, Category, PaymentInstrument } from '@/domain/types';
 import { useAttachments } from '@/hooks/attachments';
 import { useAccountBalances, useCategories, useDb, useInstruments, useLedgerMutation, useMerchantSuggestions, useSetting, useTransaction } from '@/hooks/data';
 import { attachmentStore, discardPhoto } from '@/lib/attachment-store';
 import { confirmAction, notify } from '@/lib/confirm';
 import { closeScreen } from '@/lib/navigation';
-import { dropDraft, getDraft, type ReceiptDraft } from '@/lib/receipt-drafts';
+import { dropDraft, getDraft, ocrExportJson, type ReceiptDraft } from '@/lib/receipt-drafts';
 import { pickReceiptPhoto, type PickedPhoto } from '@/lib/receipt-photo';
 import { findDuplicates, saveExpenseWithAttachments, type Attachment } from '@/services/attachments';
 import type { ExpenseInput } from '@/services/ledger';
@@ -46,6 +46,7 @@ function itemFromReceipt(it: ReceiptItem, currency: string): ItemDraft {
     qty: it.quantityMilli === null ? '' : formatQuantity(it.quantityMilli),
     unit: it.unit ?? '',
     unitPrice: it.unitPriceMinor === null ? '' : minorToInput(it.unitPriceMinor, currency),
+    hint: it.confidence,
   };
 }
 
@@ -57,6 +58,7 @@ export default function ExpenseScreen() {
   const cards = useInstruments().data;
   const categories = useCategories('expense').data;
   const lastSource = useSetting(SETTING.lastExpenseSource);
+  const ocrExport = useSetting(SETTING.receiptOcrExport);
   const stored = useAttachments(params.id);
   // A scanned receipt, taken once (the draft store is in memory and keyed by the route param).
   const [draft] = useState(() => {
@@ -71,6 +73,7 @@ export default function ExpenseScreen() {
     !cards ||
     !categories ||
     lastSource.isLoading ||
+    ocrExport.isLoading ||
     (params.id && (editing.isLoading || stored.isLoading)) ||
     (scannedMerchant?.merchantId && !known.data)
   ) {
@@ -120,10 +123,18 @@ export default function ExpenseScreen() {
     const source = fromParam ?? lastThere ?? remembered ?? { accountId: fallback.id, instrumentId: null };
     const currency = accounts.find((a) => a.id === source.accountId)?.currency ?? BASE_CURRENCY;
     const parse = draft?.parse;
+    // What actually left the account (after a global discount, rounding…), else the printed total.
+    const paid = parse ? receiptAmount(parse) : undefined;
+    // The merchant's usual category, else the one most of the recognised products are bought under
+    // (when it can be used from this location).
+    const ownership = accounts.find((a) => a.id === source.accountId)?.ownership;
+    const productCategoryId = parse?.productCategoryId ?? null;
+    const productCategory =
+      productCategoryId && categoriesFor(categories, ownership).some((c) => c.id === productCategoryId) ? productCategoryId : null;
     initial = {
-      amount: parse?.totalMinor ? minorToInput(parse.totalMinor.value, currency) : '',
+      amount: paid ? minorToInput(paid.value, currency) : '',
       merchant: parse?.merchantName?.value ?? '',
-      categoryId: merchant?.defaultCategoryId ?? null,
+      categoryId: merchant?.defaultCategoryId ?? productCategory,
       source,
       date: parse?.date.value ?? todayISO(),
       note: '',
@@ -138,6 +149,7 @@ export default function ExpenseScreen() {
     <ExpenseForm
       id={params.id ?? null}
       initial={initial}
+      canShareOcr={__DEV__ || ocrExport.data === '1'}
       accounts={accounts}
       cards={cards}
       categories={categories}
@@ -148,12 +160,14 @@ export default function ExpenseScreen() {
 function ExpenseForm({
   id,
   initial,
+  canShareOcr,
   accounts,
   cards,
   categories,
 }: {
   id: string | null;
   initial: Initial;
+  canShareOcr: boolean;
   accounts: AccountWithBalance[];
   cards: PaymentInstrument[];
   categories: Category[];
@@ -216,12 +230,24 @@ function ExpenseForm({
   const storedShown = initial.stored.filter((a) => !removeIds.includes(a.id));
 
   // Fields still holding what was read from the receipt are marked "check this".
+  // Items carry their own hint (cleared when the line is edited).
   const parse = receipt?.parse ?? null;
+  const paid = parse ? receiptAmount(parse) : undefined;
   const hint = {
-    amount: parse?.totalMinor && amount === initial.amount ? parse.totalMinor.confidence : null,
+    amount: paid && amount === initial.amount ? paid.confidence : null,
     merchant: parse?.merchantName && merchant === initial.merchant ? parse.merchantName.confidence : null,
     date: parse && date === initial.date ? parse.date.confidence : null,
-    items: parse?.items && items === initial.items ? parse.items.confidence : null,
+  };
+  const readItems = parse?.items?.value.filter((i) => i.lineKind === 'product').length ?? 0;
+  const unread = parse?.unreadMinor ?? 0;
+
+  // Developer: share what the OCR read, to add this receipt to the parser's test corpus.
+  const shareOcr = () => {
+    if (!receipt?.ocr) return;
+    const engine = Platform.OS === 'ios' ? 'Apple Vision' : Platform.OS === 'android' ? 'ML Kit' : Platform.OS;
+    Share.share({ title: 'Receipt OCR', message: ocrExportJson(receipt.ocr, `${engine} on ${Platform.OS}, exported ${todayISO()}`) }).catch(
+      (e: Error) => notify('Could not share', e.message),
+    );
   };
 
   const addPhoto = async (from: 'camera' | 'library') => {
@@ -333,6 +359,12 @@ function ExpenseForm({
                     ? 'Check the marked fields, then Save. Nothing is saved until you do.'
                     : 'The photo is attached. Fill in the expense, then Save.'}
                 </Text>
+                {parse?.items && (
+                  <Text variant="caption">
+                    {readItems === 1 ? '1 item read' : `${readItems} items read`}
+                    {unread > 0 ? `, ${formatMoney(unread, currency)} not matched to a line` : ''}
+                  </Text>
+                )}
               </View>
             </Row>
             {warnings.map((w) => (
@@ -340,6 +372,7 @@ function ExpenseForm({
                 • {w}
               </Text>
             ))}
+            {canShareOcr && receipt.ocr && <Button compact kind="ghost" icon="share" label="Share OCR data" onPress={shareOcr} />}
           </Card>
         )}
 
@@ -426,7 +459,6 @@ function ExpenseForm({
             <Text variant="caption" tone="muted" style={{ marginBottom: space.sm }}>
               List what you bought to track product prices. Fill in only what you know.
             </Text>
-            {hint.items && <ReceiptHint confidence={hint.items} />}
             <ItemsEditor items={items} onChange={setItems} paidMinor={amountMinor} currency={currency} />
           </View>
         )}

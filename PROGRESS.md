@@ -1,6 +1,6 @@
 # Progress
 
-Last updated: 2026-10-27
+Last updated: 2026-10-28
 
 | Phase | Status |
 |---|---|
@@ -8,7 +8,7 @@ Last updated: 2026-10-27
 | 2 — Analytics & savings | ✅ Done (branch `phase-2`, see below) |
 | 3 — Company money | ✅ Done (branch `phase-3`, see below) |
 | 4 — Google Sign-In & Drive backup | ✅ Done (branch `phase-4`); Android device check pending, see the checklist below |
-| 5 — Recurring, debts, attachments, polish | 🔶 Parts 1–2 done (branch `phase-5`): recurring bills, expected income, debts & receivables, simple company estimate, faster expense entry, app icon; receipt photos (schema v6, in backups) and on-device receipt scanning. Next: Android check, notifications |
+| 5 — Recurring, debts, attachments, polish | 🔶 Parts 1–2 done (branch `phase-5`): recurring bills, expected income, debts & receivables, simple company estimate, faster expense entry, app icon; receipt photos (schema v6, in backups) and on-device receipt scanning, which now fills the whole expense (items, discounts, the amount actually paid). Next: real ML Kit receipts from the S22 into the corpus, Android check, notifications |
 
 ## Phase 1 — delivered
 
@@ -82,6 +82,83 @@ Last updated: 2026-10-27
   - Icon-only chips had no accessible name.
   - Per-location trends plotted "0 DH" before the opening date.
 - **Still not verified on a physical Android device.**
+
+## Phase 5 — part 2c delivered: estimated prices for items without a price
+
+Rules in [PLAN.md](PLAN.md#estimated-item-prices-phase-5-rules). Offline, no AI or API.
+
+**What it does**
+- Expense form, items: when some items have no price, the summary offers **Estimate N prices** ("Split 54 DH across the items without a price, by what each usually costs"). Each estimated line shows "≈ 23 DH" and where its usual price came from; typing a total makes it real. If the amount changes, **Estimate again**. An unpriced line shows its usual cost as a hint ("Usually ≈ 33 DH (22 DH/kg, starter price list)").
+- Transaction detail: estimated lines show "≈" and "estimated".
+- **Usual prices** screen ([products/prices.tsx](src/app/products/prices.tsx), from Products & prices): the starter list by group, with your purchases' and your own price next to it; search by French, Darija or English name; tap to set or remove your price; add a price for anything else.
+
+**Code**
+- [domain/price-book.ts](src/domain/price-book.ts): starter list (≈100 items: vegetables, fruit, meat, fish, dairy, bread/grains, groceries, drinks, household), Casablanca/Rabat retail, October 2026. Prices are rough starting points written from general knowledge, not a survey: they should be checked against real receipts and corrected (mostly the ratios matter, since the amount paid is real).
+- [domain/price-estimate.ts](src/domain/price-estimate.ts): name matching, usual cost of a line, exact split.
+- [services/prices.ts](src/services/prices.ts): learned prices, your list (CRUD), the merged price book.
+- Migration **v7**: `purchase_items.estimated` (default 0) and `price_refs` (with change triggers). The ledger writes `estimated` only when set, so older schemas built in tests still take items.
+- `loadProductLines` and `suggestProducts` ignore estimated lines' quantity/price.
+
+**Tests** (+25, 311 total): starter list sanity; names (accents, plurals, sizes, Darija); source priority and recency; usual cost (units, bare numbers, size in name, incompatible units, per purchase); `allocate` always exact; estimates with discounts/charges/unallocated/re-estimate; learned prices (last 3, unit groups, never from estimates); your list (one per name, tracked for backups); price book joins; saved estimates never reach price history/suggestions; ledger refuses estimates that don't add up; v6 → v7 migration changes nothing else.
+
+**Checks**: `npx tsc --noEmit`, `npx eslint src`, `npm test` clean. Web smoke test (Playwright, 412 px, existing test profile DB migrated to v7): Usual prices lists the starter list; "matecha" finds Tomatoes, already learned at 10 DH/kg from an earlier purchase; set my price 12 DH/kg. Expense 60 DH: Tomates 2 kg, Poulet, Pain 6 → hints shown → Estimate → ≈ 23 / ≈ 31 / 6 = 60. Amount changed to 70: Save refused with the "Estimate again" message; re-estimated and saved; detail shows ≈ 27 / ≈ 37 / 6. No console errors.
+
+## Phase 5 — part 2b delivered: receipt scanning fills the whole expense
+
+No schema change (still v6), no new dependency, no change to the OCR modules.
+
+**What the parser now reads** ([domain/receipt-parse.ts](src/domain/receipt-parse.ts), rules in [PLAN.md](PLAN.md#receipt-photos-and-scanning-phase-5-rules))
+- **Two amounts**: `totalMinor` (TOTAL, TOTAL TTC…) and `finalMinor` (NET A PAYER, A PAYER, MONTANT TTC, TOTAL NET), plus `receiptAmount()`, which returns the amount paid when printed and the total otherwise. Global REMISE, ARRONDI (either sign), TIMBRE and SERVICE lines between the two must explain the difference. Without NET A PAYER, a card or cash amount equal to "total − the discounts printed after it" becomes the amount (medium confidence).
+- **Cross-checks** (agreement raises confidence; a disagreement lowers it and the warning names the pair): lines vs total, total vs amount paid, cash − change or card vs amount paid.
+- **Items**: no longer all-or-nothing.
+  - Every line read is proposed with its own `confidence`, `source` and matched `productId`/`categoryId`. The part of the amount no line was read for becomes one `unallocated` line, "Not read from the receipt" (`unreadMinor`), so the lines always add up to the amount and nothing is counted twice.
+  - Lines adding up to more than the amount → no items, with a warning.
+  - Layouts: see PLAN. Real Marjane receipts print a department subtotal after each line (BISCUITERIE 9.90, MENAGE 139.00); these are now skipped instead of counted twice. "Dont droits de timbre" (read as "NONT") becomes a 0.37 charge line.
+- **Item names**: codes (incl. "(5)6221134002638"), VAT rates, tax letters and "x1" are dropped; names are title-cased (accented capitals too) and keep their sizes.
+- **Products**: matched like merchants (accent/case-insensitive, one OCR slip, only when unambiguous) and renamed to the existing product, so the ledger reuses it. [queries.ts](src/services/queries.ts) `listProductNames` gives each product its usual category: its own, otherwise the most common category of its live expenses.
+- **Dates**: a time after the date, "DATE:", "Le", French/English month names, O→0 and l→1 slips inside digit groups, and dates glued to a ticket number or a time (the last two are one level less sure).
+- **Ledger rule checked, not changed**: items are a breakdown and never change the paid amount (`saveExpense` stores them as given; item tags are capped at the amount paid). There is no "items must equal amount" rule in the ledger; the parser's unallocated line makes the proposal add up. `purchase_items.category_id` is still never written: the form has no per-line category, so a product's category is used for the expense category only.
+
+**Form** ([entry/expense.tsx](src/app/entry/expense.tsx))
+- Amount ← amount paid (else the total); date; merchant (an existing merchant is reused by id); items, including the unallocated line; category ← the merchant's default, otherwise the matched products' most common category (only if usable from the chosen location); note stays empty.
+- The "From receipt" banner adds "N items read, X DH not matched to a line". Each item card shows its own "check this" (amber when low); editing a line clears its hint.
+- Nothing is saved until Save; leaving still deletes the temporary photo and the draft.
+
+**Corpus and OCR export**
+- [src/domain/__fixtures__/receipts](src/domain/__fixtures__/receipts): `marjane-vision` and `bim-vision` (the two Apple Vision readings that were inline in the test) moved there with `.expected.json` files (total, final, amount, date, merchant, unread, every item). [receipt-fixtures.test.ts](src/domain/receipt-fixtures.test.ts) runs every fixture. A fixture without an expected file fails and prints the parser's reading in the expected format, ready to correct against the paper.
+- **Exporting OCR from the phone**:
+  1. Settings → Developer → turn on "Share OCR data from scans". It is always on in a dev build.
+  2. Scan a receipt. In the "From receipt" banner, tap **Share OCR data**. This shares JSON (image size, then one line per OCR line, with box and confidence) to Drive, Gmail, Keep, etc.
+  3. Save it as `src/domain/__fixtures__/receipts/<store>-<kind>.json`, run `npm test -- receipt-fixtures`, copy the printed reading to `<store>-<kind>.expected.json`, and correct it against the paper.
+
+  The OCR text stays in the in-memory draft and is never written to the database or a file by the app.
+
+**Verification (2026-10-28)**
+- `npm test`: 286 tests in 20 suites (255 before + 31 new):
+  - Parser (26 more in `receipt-parse.test.ts`; the two real receipts moved to the corpus): two amounts (global discount, rounding, stamp duty, service, "dont timbre" inside or outside the lines, total vs amount-paid mismatch with and without adjustments, card-derived amount, cash − change mismatch, NET A PAYER alone).
+  - Item layouts: name / qty×price / amount rows; quantity row after (with and without the amount); EANs before/after; weights on and below the name; QTE/PU columns in both orders and disagreeing; per-item vs named discounts; VAT letters/rates; wrapped names; header rows never joined; department subtotals; fuel with disagreeing volume × price; per-line weak OCR.
+  - Names, products (exact, accents, OCR slip, ambiguous) and dates (time, label, "Le", month names, slips, glued, still never swapped).
+  - Changed on purpose: items short of the total now come with an unallocated line; items over the total give none (was: within tolerance); a total confirmed by its lines is "high"; fuel has its item; "27/1O/2026" is now read as a date.
+  - Corpus (4: non-empty, 2 fixtures, export round-trip); `listProductNames` (1).
+- `npx tsc --noEmit`, `npx eslint src`: clean.
+- Web smoke test (headless Chromium, 412 px, fresh database; web OCR stubbed for the run and reverted): a receipt with Lait 2 × 7.50, Pain 3.00, TOTAL 25.00, REMISE −1.00, NET A PAYER 24.00. The form showed amount 24, Marjane, today's date, the line hints (amber on "Not read from the receipt"), "2 items read, 7 DH not matched to a line" and the warning naming the lines vs the total. "Share OCR data" was shown. Save stored one 24 DH expense with 4 lines. No console errors.
+- **Not verified on Android**: every corpus receipt so far is an Apple Vision reading made on the Mac. ML Kit on the S22 splits lines and gives confidence differently, so the first S22 exports matter most.
+
+### Fixture status
+
+| Fixture | Total | Paid | Date | Merchant | Items |
+|---|---|---|---|---|---|
+| marjane-vision | ✅ 149.27 | (none printed) | ✅ 21/05/2017 | ✅ | ✅ 3 lines (Chocolat Galaxy 2 × 4.95, Friteuse 139.00, stamp duty 0.37), nothing unread |
+| bim-vision | ✅ 42.80 | (none printed) | ✅ 15/11/2024 | ✅ | ✅ 2 lines, nothing unread |
+
+### S22 checklist for this part (preview build with the change)
+
+1. Settings → Developer → "Share OCR data from scans" on.
+2. Scan, and for each receipt tap **Share OCR data** before saving. Send the exports with a photo of the paper. Wanted: a supermarket (Marjane/Carrefour/BIM, long), a café, a pharmacy (NET A PAYER), a fuel station, a TVA invoice (HT/TVA/TTC), one paid in cash (ESPECES/RENDU), one with a REMISE or ARRONDI, and a crumpled/blurry one.
+3. On each: is the amount what left the account? Is every printed line there, with quantity/unit price where printed? Is "Not read from the receipt" the right difference? Are the amber lines the doubtful ones? Note anything wrong.
+4. Scan a receipt with a product bought before (same name): the line uses the existing product name, and the category is the one used last time for it (when the store has no default).
+5. Edit a prefilled line: its "check this" disappears. Save: the expense's items add up to the amount (detail screen).
+6. Leave the form without saving: nothing saved, photo deleted.
 
 ## Phase 5 — part 2 delivered: receipt photos and scanning
 

@@ -1,7 +1,16 @@
-import { findAmounts, merchantKey, parseReceipt, toRows, type OcrLine } from './receipt-parse';
+import { findAmounts, merchantKey, parseReceipt, receiptAmount, toRows, UNREAD_ITEM_NAME, type OcrLine, type ReceiptItem, type ReceiptParse } from './receipt-parse';
 
 const today = '2026-10-27';
 const lines = (text: string) => text.split('\n');
+const brief = ({ lineKind, name, quantityMilli, unit, unitPriceMinor, totalMinor }: ReceiptItem) => ({
+  lineKind,
+  name,
+  quantityMilli,
+  unit,
+  unitPriceMinor,
+  totalMinor,
+});
+const named = (r: ReceiptParse) => r.items?.value.map((i) => [i.lineKind, i.name, i.totalMinor]);
 
 describe('amounts on receipts', () => {
   it('reads comma decimals, thousands separators and DH/MAD through money.ts', () => {
@@ -62,13 +71,16 @@ MERCI DE VOTRE VISITE`),
     expect(r.totalMinor).toMatchObject({ value: 10000, confidence: 'high' });
     expect(r.date).toMatchObject({ value: '2026-10-27', confidence: 'high' });
     expect(r.merchantName).toMatchObject({ value: 'Marjane', merchantId: null, confidence: 'medium' });
-    expect(r.items?.value).toEqual([
+    expect(r.items?.value.map(brief)).toEqual([
       { lineKind: 'product', name: 'Lait Centrale 1L', quantityMilli: 2000, unit: null, unitPriceMinor: 750, totalMinor: 1500 },
       { lineKind: 'product', name: 'Pain Complet 400G', quantityMilli: null, unit: null, unitPriceMinor: null, totalMinor: 1200 },
       { lineKind: 'product', name: 'Poulet', quantityMilli: 1250, unit: 'kg', unitPriceMinor: 6200, totalMinor: 7750 },
       { lineKind: 'discount', name: 'Remise Fidelite', quantityMilli: null, unit: null, unitPriceMinor: null, totalMinor: 450 },
     ]);
     expect(r.items?.confidence).toBe('high');
+    expect(r.items?.value.every((i) => i.confidence === 'high')).toBe(true);
+    expect(r.unreadMinor).toBe(0);
+    expect(r.finalMinor).toBeUndefined();
   });
 
   it('reuses an existing merchant, accent- and case-insensitively', () => {
@@ -129,7 +141,7 @@ NET A PAYER             47,60 DH`),
     ]);
   });
 
-  it('café: leading counts and a two-digit year', () => {
+  it('café: leading counts and a two-digit year; items adding up confirm the total', () => {
     const r = parseReceipt(
       lines(`CAFE DE FRANCE
 Table 4  Serveur: Karim
@@ -140,7 +152,8 @@ TOTAL              50,00
 Date: 25-10-26 10:15`),
       { today },
     );
-    expect(r.totalMinor).toMatchObject({ value: 5000, confidence: 'medium' });
+    // TOTAL alone is "medium"; the lines adding up to it exactly raise it.
+    expect(r.totalMinor).toMatchObject({ value: 5000, confidence: 'high' });
     expect(r.date.value).toBe('2026-10-25');
     expect(r.merchantName?.value).toBe('Cafe De France');
     expect(r.items?.value.map((i) => [i.name, i.quantityMilli, i.totalMinor])).toEqual([
@@ -150,7 +163,7 @@ Date: 25-10-26 10:15`),
     ]);
   });
 
-  it('fuel station: MONTANT confirmed by the card line; volume and price are not items', () => {
+  it('fuel station: MONTANT confirmed by the card line; the fuel is the one item, volume and price its quantity and price', () => {
     const r = parseReceipt(
       lines(`AFRIQUIA
 STATION AL WAHDA
@@ -166,7 +179,11 @@ CB VISA    581,21`),
     expect(r.totalMinor).toMatchObject({ value: 58121, confidence: 'high' });
     expect(r.date.value).toBe('2026-10-26');
     expect(r.merchantName).toMatchObject({ value: 'Afriquia', confidence: 'medium' });
-    expect(r.items).toBeUndefined();
+    expect(r.items?.value.map(brief)).toEqual([
+      { lineKind: 'product', name: 'Gasoil', quantityMilli: 45230, unit: 'L', unitPriceMinor: 1285, totalMinor: 58121 },
+    ]);
+    expect(r.items?.value[0].confidence).toBe('high');
+    expect(r.unreadMinor).toBe(0);
   });
 
   it('invoice with TVA lines: TOTAL HT and TVA are ignored, TOTAL TTC is the amount', () => {
@@ -215,7 +232,7 @@ TOTAL TTC       275,00`),
   });
 
   it('blurry or partial receipt: nothing is invented', () => {
-    const r = parseReceipt(lines(`M?RJ@NE\nT0TAL    1?5,4\n27/1O/2026`), { today });
+    const r = parseReceipt(lines(`M?RJ@NE\nT0TAL    1?5,4\n27/1?/2026`), { today });
     expect(r.totalMinor).toBeUndefined();
     expect(r.merchantName).toBeUndefined();
     expect(r.items).toBeUndefined();
@@ -245,130 +262,36 @@ TOTAL TTC       275,00`),
     expect(parseReceipt(['TEL 06-12-10-26-11', 'TOTAL 5,00'], { today }).date.source).toBeNull();
   });
 
-  it('items that do not add up to the total are not proposed', () => {
+  it('items short of the total are proposed, the rest on one "not read" line, so they add up to the amount', () => {
     const r = parseReceipt(lines(`BIM\nTOMATES 12,00\nOIGNONS 8,00\nTOTAL 35,00`), { today });
     expect(r.totalMinor?.value).toBe(3500);
-    expect(r.items).toBeUndefined();
-    expect(r.warnings.join(' ')).toMatch(/did not add up/);
-  });
-
-  it('items within the small rounding tolerance are proposed with medium confidence', () => {
-    const r = parseReceipt(lines(`BIM\nTOMATES 12,00\nOIGNONS 8,01\nTOTAL 20,00`), { today });
+    expect(named(r)).toEqual([
+      ['product', 'Tomates', 1200],
+      ['product', 'Oignons', 800],
+      ['unallocated', UNREAD_ITEM_NAME, 1500],
+    ]);
+    expect(r.unreadMinor).toBe(1500);
     expect(r.items?.confidence).toBe('medium');
+    expect(r.items?.value[2]).toMatchObject({ confidence: 'low', source: null });
+    // The pair that disagrees is named.
+    expect(r.warnings.join(' ')).toMatch(/item lines read add up to 20.*total is 35/);
+    // The total is not confirmed by the lines: it stays as its label makes it.
+    expect(r.totalMinor?.confidence).toBe('medium');
   });
 
-  it('a quantity × price that disagrees with the line total is dropped, the line is kept', () => {
+  it('items adding up to more than the total: none are proposed (something was misread)', () => {
+    const r = parseReceipt(lines(`BIM\nTOMATES 12,00\nOIGNONS 8,01\nTOTAL 20,00`), { today });
+    expect(r.items).toBeUndefined();
+    expect(r.unreadMinor).toBeUndefined();
+    expect(r.warnings.join(' ')).toMatch(/add up to 20[.,]01.*more than the total/);
+  });
+
+  it('a quantity × price that disagrees with the line total is dropped, the line is kept (low confidence)', () => {
     const r = parseReceipt(lines(`EAU 6 X 1,50 12,00\nTOTAL 12,00`), { today });
-    expect(r.items?.value).toEqual([
+    expect(r.items?.value.map(brief)).toEqual([
       { lineKind: 'product', name: 'Eau', quantityMilli: null, unit: null, unitPriceMinor: null, totalMinor: 1200 },
     ]);
-  });
-});
-
-describe('real receipts (photos from the S22, lines and boxes as OCR returns them)', () => {
-  const ln = (text: string, x: number, y: number, width: number, height: number, confidence: number): OcrLine => ({
-    text,
-    confidence,
-    box: { x, y, width, height },
-  });
-  const merchants = [
-    { id: 'm1', name: 'Marjane' },
-    { id: 'm2', name: 'BIM' },
-  ];
-
-  const marjane: OcrLine[] = [
-    ln('Marjane', 319, 140, 191, 48, 1),
-    ln('MARJANE HOLDING', 362, 278, 430, 36, 1),
-    ln('MARJANE SAFI', 489, 328, 176, 31, 1),
-    ln('ICE : 001531173000020', 412, 372, 332, 32, 1),
-    ln('21/05/2017 15:45:10 84 3 2751', 362, 460, 428, 40, 1),
-    ln('(5)6221134002638 CHOCOLAT GALAXY', 157, 499, 472, 41, 1),
-    ln('2 x 4.95', 332, 552, 122, 37, 0.5),
-    ln('BISCUITERIE', 157, 594, 327, 42, 1),
-    ln('(5)8435123220332 FRITEUSE EMAILL', 189, 641, 469, 43, 1),
-    ln('MENAGE', 166, 686, 172, 32, 1),
-    ln('TOTA', 177, 761, 197, 30, 0.3),
-    ln('L', 392, 770, 34, 22, 0.5),
-    ln('NONT DROITS DE TIMBRE : 0.37', 185, 792, 381, 38, 0.5),
-    ln('IMBRE', 360, 892, 64, 28, 0.5),
-    ln("•ORE D'ARTICLES", 228, 970, 206, 38, 0.3),
-    ln('TVA POUR INFORMATION', 201, 1012, 260, 43, 1),
-    ln('5', 252, 1108, 16, 28, 0.5),
-    ln('total', 248, 1154, 68, 30, 1),
-    ln('20.00', 326, 1110, 74, 38, 1),
-    ln('HT', 537, 1082, 34, 30, 1),
-    ln('124.07', 511, 1122, 82, 36, 1),
-    ln('124.07', 508, 1166, 86, 40, 1),
-    ln('TAXE', 661, 1092, 62, 34, 1),
-    ln('24.83', 653, 1140, 76, 40, 1),
-    ln('24.83', 657, 1184, 72, 36, 1),
-    ln('00521004', 440, 1262, 170, 16, 0.3),
-    ln('9.90', 933, 560, 62, 34, 1),
-    ln('9.90', 831, 606, 118, 42, 1),
-    ln('139.00', 899, 653, 92, 37, 1),
-    ln('139.00', 771, 700, 174, 40, 1),
-    ln('149.27', 765, 782, 170, 34, 1),
-    ln('200.00', 869, 874, 90, 41, 1),
-    ln('0.37', 897, 920, 62, 40, 1),
-    ln('50.73', 885, 966, 74, 36, 1),
-    ln('3', 939, 1018, 18, 26, 0.5),
-    ln('-', 927, 1070, 16, 14, 0.5),
-    ln('TTC', 839, 1102, 48, 34, 1),
-    ln('148.90', 807, 1150, 88, 38, 1),
-    ln('148.90', 807, 1200, 92, 38, 1),
-  ];
-  const bim: OcrLine[] = [
-    ln('BIM MAROC', 151, 75, 178, 34, 1),
-    ln('Magasin GHAZA', 149, 117, 131, 33, 1),
-    ln('Avenue Gaza Lot 2422', 113, 137, 196, 32, 1),
-    ln('Al Wifaq Temara', 132, 164, 146, 20, 1),
-    ln('TEMARA', 178, 184, 62, 19, 1),
-    ln('15/11/2024', 35, 227, 85, 27, 1),
-    ln('TIME: 09:29:39', 38, 248, 117, 20, 1),
-    ln('LAIT 600G KEFIF', 32, 286, 132, 20, 1),
-    ln('YRT NATUR KEFIR 500G', 32, 304, 180, 20, 1),
-    ln('N° ticket: 0012', 246, 218, 159, 25, 1),
-    ln('20%', 256, 282, 34, 20, 1),
-    ln('20%', 256, 302, 34, 20, 1),
-    ln('22.90', 350, 281, 54, 21, 1),
-    ln('19.90', 350, 302, 54, 20, 1),
-    ln('SOUS TOTAL', 34, 344, 158, 16, 0.5),
-    ln('42.80', 350, 342, 56, 22, 1),
-    ln('TOTAL TTC', 34, 382, 92, 30, 0.5),
-    ln('Dont', 36, 414, 38, 18, 1),
-    ln('TVA', 94, 416, 30, 18, 1),
-    ln('CARTE BANCAIRE', 36, 451, 127, 21, 1),
-    ln('42.80 DH', 308, 386, 102, 41, 1),
-    ln('7.13 DH', 320, 424, 88, 20, 0.5),
-    ln('42.80', 350, 458, 56, 26, 1),
-    ln('NOMBRE ARTICLES', 35, 487, 137, 23, 1),
-    ln('2', 244, 498, 10, 16, 1),
-    ln('M:1826 P:001 C:77012 AZOUZI ZINEB', 35, 502, 310, 41, 0.5),
-    ln('MERCI DE VOTRE VISITE ET A BIENTOT:', 35, 523, 326, 38, 0.5),
-    ln('PATENTE:26901134', 35, 541, 148, 28, 0.5),
-    ln('Id.Fiscal: 1108770', 208, 554, 162, 18, 0.5),
-    ln('R.C.No :8633', 37, 563, 109, 20, 0.5),
-    ln('ICE', 38, 580, 28, 18, 1),
-    ln('CNSS', 206, 572, 40, 18, 1),
-    ln(': 1794987', 294, 565, 74, 25, 0.5),
-    ln(':001527053000001', 99, 583, 148, 29, 1),
-  ];
-
-  it('Marjane: letter-spaced "T O T A L" with its amount on the next row; the TVA table total is ignored', () => {
-    const r = parseReceipt(marjane, { today, merchants });
-    expect(r.totalMinor?.value).toBe(14927); // not 148,90 from the TVA table (it leaves out the stamp duty)
-    expect(r.merchantName).toMatchObject({ merchantId: 'm1' });
-  });
-
-  it('BIM: "TOTAL TTC / dont TVA" joined by the large amount; items without the VAT rate column', () => {
-    const r = parseReceipt(bim, { today, merchants });
-    expect(r.totalMinor?.value).toBe(4280);
-    expect(r.date.value).toBe('2024-11-15');
-    expect(r.merchantName).toMatchObject({ merchantId: 'm2' });
-    expect(r.items?.value.map((it) => [it.name, it.totalMinor])).toEqual([
-      ['Lait 600G Kefif', 2290],
-      ['Yrt Natur Kefir 500G', 1990],
-    ]);
+    expect(r.items?.value[0].confidence).toBe('low');
   });
 });
 
@@ -394,5 +317,273 @@ describe('total labels', () => {
       { text: '200,00', box: { x: 600, y: 140, width: 120, height: 30 }, confidence: 1 },
     ];
     expect(parseReceipt(below, { today }).totalMinor).toBeUndefined();
+  });
+});
+
+describe('two amounts: the total and what was paid', () => {
+  it('a global discount between TOTAL and NET A PAYER: the amount is what was paid, the discount is a line', () => {
+    const r = parseReceipt(lines(`EPICERIE ATLAS\n26/10/2026\nLAIT 7,50\nPAIN 2,50\nTOTAL 10,00\nREMISE 10% -1,00\nNET A PAYER 9,00`), { today });
+    expect(r.totalMinor).toMatchObject({ value: 1000 });
+    expect(r.finalMinor).toMatchObject({ value: 900, confidence: 'high' });
+    expect(receiptAmount(r)?.value).toBe(900);
+    expect(named(r)).toEqual([
+      ['product', 'Lait', 750],
+      ['product', 'Pain', 250],
+      ['discount', 'Remise', 100],
+    ]);
+    expect(r.unreadMinor).toBe(0);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('rounding (ARRONDI), confirmed by cash − change', () => {
+    const r = parseReceipt(lines(`PHARMACIE ATLAS\nDOLIPRANE 15,63\nTOTAL TTC 15,63\nARRONDI -0,03\nA PAYER 15,60\nESPECES 20,00\nRENDU 4,40`), { today });
+    expect(r.totalMinor?.value).toBe(1563);
+    expect(r.finalMinor).toMatchObject({ value: 1560, confidence: 'high' });
+    expect(named(r)).toEqual([
+      ['product', 'Doliprane', 1563],
+      ['discount', 'Arrondi', 3],
+    ]);
+  });
+
+  it('stamp duty and service added to the total are charges', () => {
+    const stamp = parseReceipt(lines(`QUINCAILLERIE\nVIS 100,00\nTOTAL 100,00\nDROIT DE TIMBRE 0,25\nNET A PAYER 100,25`), { today });
+    expect(stamp.finalMinor?.value).toBe(10025);
+    expect(named(stamp)).toEqual([
+      ['product', 'Vis', 10000],
+      ['charge', 'Droit De Timbre', 25],
+    ]);
+    const service = parseReceipt(lines(`CAFE ATLAS\n2 CAFE 20,00\n1 TARTE 30,00\nTOTAL 50,00\nSERVICE 10% 5,00\nA PAYER 55,00`), { today });
+    expect(service.finalMinor?.value).toBe(5500);
+    expect(named(service)?.at(-1)).toEqual(['charge', 'Service', 500]);
+  });
+
+  it('"dont droits de timbre" is inside the total: a charge line only when the lines leave room for it', () => {
+    const r = parseReceipt(lines(`MARJANE\nCAFE 10,00\nTOTAL 10,25\nDONT DROITS DE TIMBRE 0,25\nESPECES 20,00\nRENDU 9,75`), { today });
+    expect(r.finalMinor).toBeUndefined();
+    expect(named(r)).toEqual([
+      ['product', 'Cafe', 1000],
+      ['charge', 'Droits de timbre', 25],
+    ]);
+    // Already in the item prices: not added again.
+    const inside = parseReceipt(lines(`MARJANE\nCAFE 10,25\nTOTAL 10,25\nDONT DROITS DE TIMBRE 0,25`), { today });
+    expect(named(inside)).toEqual([['product', 'Cafe', 1025]]);
+  });
+
+  it('a total and an amount to pay that disagree: the amount to pay, lowered, and a warning naming both', () => {
+    const r = parseReceipt(lines(`BOUTIQUE\nSAC 100,00\nTOTAL 100,00\nNET A PAYER 85,00`), { today });
+    expect(receiptAmount(r)).toMatchObject({ value: 8500, confidence: 'medium' });
+    expect(r.warnings.join(' ')).toMatch(/total \(100.*amount to pay \(85.*no discount or charge/);
+    // The lines add up to more than what was paid: no items rather than a wrong breakdown.
+    expect(r.items).toBeUndefined();
+    expect(r.warnings.join(' ')).toMatch(/more than the amount to pay/);
+    const off = parseReceipt(lines(`TOTAL 100,00\nREMISE -10,00\nNET A PAYER 85,00`), { today });
+    expect(off.warnings.join(' ')).toMatch(/with the discounts and charges printed \(90.*does not match the amount to pay \(85/);
+  });
+
+  it('no NET A PAYER: a card payment equal to total − the discount printed after it is the amount (medium)', () => {
+    const r = parseReceipt(lines(`EPICERIE ATLAS\n26/10/2026\nPAIN 4,00\nLAIT 6,00\nTOTAL 10,00\nREMISE -1,00\nCB 9,00`), { today });
+    expect(r.totalMinor?.value).toBe(1000);
+    expect(r.finalMinor).toEqual({ value: 900, confidence: 'medium', source: 'CB 9,00' });
+    expect(named(r)?.at(-1)).toEqual(['discount', 'Remise', 100]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('cash − change that differs from the amount lowers it and says which pair disagrees', () => {
+    const r = parseReceipt(lines(`TOTAL 75,50\nESPECES 100,00\nRENDU 20,00`), { today });
+    expect(r.totalMinor).toMatchObject({ value: 7550, confidence: 'low' });
+    expect(r.warnings.join(' ')).toMatch(/cash given minus the change \(80.*amount to pay \(75[.,]50/);
+  });
+
+  it('NET A PAYER alone is both the total and the amount paid', () => {
+    const r = parseReceipt(lines(`NET A PAYER 47,60`), { today });
+    expect(r.totalMinor?.value).toBe(4760);
+    expect(r.finalMinor?.value).toBe(4760);
+  });
+});
+
+describe('item layouts', () => {
+  it('name row, then "qty x price" row, then the amount row', () => {
+    const r = parseReceipt(lines(`BIM\nYAOURT NATURE\n3 x 2,50\n7,50\nEAU SIDI ALI 1,5L\n6,00\nTOTAL 13,50`), { today });
+    expect(r.items?.value.map(brief)).toEqual([
+      { lineKind: 'product', name: 'Yaourt Nature', quantityMilli: 3000, unit: null, unitPriceMinor: 250, totalMinor: 750 },
+      { lineKind: 'product', name: 'Eau Sidi Ali 1,5L', quantityMilli: null, unit: null, unitPriceMinor: null, totalMinor: 600 },
+    ]);
+    expect(r.items?.value[0].confidence).toBe('high');
+  });
+
+  it('name and amount, with the quantity row after (with or without the amount repeated)', () => {
+    for (const qtyRow of ['  2 x 7,50', '  2 x 7,50     15,00']) {
+      const r = parseReceipt(lines(`BIM\nLAIT CENTRALE 15,00\n${qtyRow}\nPAIN 3,00\nTOTAL 18,00`), { today });
+      expect(r.items?.value.map(brief)).toEqual([
+        { lineKind: 'product', name: 'Lait Centrale', quantityMilli: 2000, unit: null, unitPriceMinor: 750, totalMinor: 1500 },
+        { lineKind: 'product', name: 'Pain', quantityMilli: null, unit: null, unitPriceMinor: null, totalMinor: 300 },
+      ]);
+    }
+  });
+
+  it('EAN / article codes before or after the name are dropped', () => {
+    const r = parseReceipt(lines(`BIM\n6111245780012 HARIRA KNORR 4,50\nCOCA COLA 1L 6111252421227 9,00\n10234 SUCRE 5,00\nTOTAL 18,50`), { today });
+    expect(named(r)).toEqual([
+      ['product', 'Harira Knorr', 450],
+      ['product', 'Coca Cola 1L', 900],
+      ['product', 'Sucre', 500],
+    ]);
+  });
+
+  it('weight lines, on the name row or below it', () => {
+    const r = parseReceipt(lines(`MARCHE\nTOMATES 1,250 KG x 6,00 7,50\nBANANES\n0,850 kg x 14,00 11,90\nTOTAL 19,40`), { today });
+    expect(r.items?.value.map(brief)).toEqual([
+      { lineKind: 'product', name: 'Tomates', quantityMilli: 1250, unit: 'kg', unitPriceMinor: 600, totalMinor: 750 },
+      { lineKind: 'product', name: 'Bananes', quantityMilli: 850, unit: 'kg', unitPriceMinor: 1400, totalMinor: 1190 },
+    ]);
+  });
+
+  it('QTE / PU columns, in either order, under a header row', () => {
+    const r = parseReceipt(lines(`DROGUERIE\nDESIGNATION  QTE  PU  MONTANT\nLAIT CENTRALE  2  7,50  15,00\nPAIN  1  3,00  3,00\nTOTAL 18,00`), { today });
+    expect(r.items?.value.map(brief)).toEqual([
+      { lineKind: 'product', name: 'Lait Centrale', quantityMilli: 2000, unit: null, unitPriceMinor: 750, totalMinor: 1500 },
+      { lineKind: 'product', name: 'Pain', quantityMilli: 1000, unit: null, unitPriceMinor: 300, totalMinor: 300 },
+    ]);
+    const pu = parseReceipt(lines(`DROGUERIE\nARTICLE  PU  QTE  TOTAL\nSAVON  4,50  3  13,50\nTOTAL 13,50`), { today });
+    expect(pu.items?.value.map(brief)).toEqual([
+      { lineKind: 'product', name: 'Savon', quantityMilli: 3000, unit: null, unitPriceMinor: 450, totalMinor: 1350 },
+    ]);
+    // Two price columns that disagree: the line total is kept, the line is marked unsure.
+    const off = parseReceipt(lines(`DROGUERIE\nSAVON  4,50  13,00\nTOTAL 13,00`), { today });
+    expect(off.items?.value[0]).toMatchObject({ name: 'Savon', totalMinor: 1300, unitPriceMinor: null, confidence: 'low' });
+  });
+
+  it('a bare discount row belongs to the item above it; a named one stays a discount of its own', () => {
+    const r = parseReceipt(lines(`BIM\nLAIT CENTRALE 15,00\nREMISE -3,00\nPAIN 3,00\nPROMO FIDELITE -1,00\nTOTAL 14,00`), { today });
+    expect(named(r)).toEqual([
+      ['product', 'Lait Centrale', 1500],
+      ['discount', 'Remise Lait Centrale', 300],
+      ['product', 'Pain', 300],
+      ['discount', 'Promo Fidelite', 100],
+    ]);
+    expect(r.unreadMinor).toBe(0);
+  });
+
+  it('VAT code letters and rates around the name or the amount are dropped', () => {
+    const r = parseReceipt(lines(`BIM\nLAIT CENTRALE A 7,50\nPAIN 3,00 B\nEAU 5,00 *\nHUILE LESIEUR 5L 20% 89,90\nTOTAL 105,40`), { today });
+    expect(named(r)).toEqual([
+      ['product', 'Lait Centrale', 750],
+      ['product', 'Pain', 300],
+      ['product', 'Eau', 500],
+      ['product', 'Huile Lesieur 5L', 8990],
+    ]);
+  });
+
+  it('a name wrapped on two rows is joined; a row starting with a count is a new line', () => {
+    const r = parseReceipt(lines(`EPICERIE ATLAS\nYAOURT AROMATISE JAOUDA\nFRAISE 4X110G 12,00\n2 CAFE 8,00\nTOTAL 20,00`), { today });
+    expect(named(r)).toEqual([
+      ['product', 'Yaourt Aromatise Jaouda Fraise 4X110G', 1200],
+      ['product', 'Cafe', 800],
+    ]);
+    expect(r.items?.value[0].source).toBe('YAOURT AROMATISE JAOUDA / FRAISE 4X110G 12,00');
+  });
+
+  it('header rows (address, ticket, cashier) never join an item name', () => {
+    const r = parseReceipt(lines(`EPICERIE ATLAS\nRUE 12 HAY NAHDA\nCaissier: Ahmed\nLAIT 7,50\nTOTAL 7,50`), { today });
+    expect(named(r)).toEqual([['product', 'Lait', 750]]);
+  });
+
+  it('department subtotals are not items, and confirm the lines above them', () => {
+    const r = parseReceipt(lines(`MARJANE\nCHOCOLAT GALAXY\n2 x 4,95 9,90\nBISCUITERIE 9,90\nFRITEUSE 139,00\nMENAGE\n139,00\nTOTAL 148,90`), { today });
+    expect(named(r)).toEqual([
+      ['product', 'Chocolat Galaxy', 990],
+      ['product', 'Friteuse', 13900],
+    ]);
+  });
+
+  it('fuel: volume × price that disagrees with the amount is not kept; the fuel line is', () => {
+    const r = parseReceipt(lines(`SHELL\nSANS PLOMB\nQUANTITE 20,00 L\nP.U 13,20\nA PAYER 300,00`), { today });
+    expect(r.items?.value.map(brief)).toEqual([
+      { lineKind: 'product', name: 'Sans plomb', quantityMilli: null, unit: null, unitPriceMinor: null, totalMinor: 30000 },
+    ]);
+    expect(r.items?.value[0].confidence).toBe('low');
+  });
+
+  it('a line read with weak OCR or a garbled name is marked unsure on its own', () => {
+    const r = parseReceipt(
+      [{ text: 'BIM' }, { text: 'LAIT CENTRALE 7,50', confidence: 0.4 }, { text: 'PAIN 3,00', confidence: 0.95 }, { text: 'TOTAL 10,50', confidence: 0.95 }],
+      { today },
+    );
+    expect(r.items?.value.map((i) => [i.name, i.confidence])).toEqual([
+      ['Lait Centrale', 'medium'],
+      ['Pain', 'high'],
+    ]);
+    expect(r.items?.confidence).toBe('medium');
+  });
+});
+
+describe('item names and products', () => {
+  it('names: codes, VAT rates, tax letters and "x1" removed; title case; sizes kept', () => {
+    const r = parseReceipt(lines(`BIM\nLAIT CENTRALE 1L x1 7,50\nCRÈME FRAÎCHE 200G 9,90\nTOTAL 17,40`), { today });
+    expect(named(r)).toEqual([
+      ['product', 'Lait Centrale 1L', 750],
+      ['product', 'Crème Fraîche 200G', 990],
+    ]);
+  });
+
+  it('existing products are reused (accents, case, one OCR slip) and bring their usual category', () => {
+    const products = [
+      { id: 'p1', name: 'Lait Centrale 1L', categoryId: 'cat-food' },
+      { id: 'p2', name: 'Pain complet', categoryId: 'cat-bread' },
+      { id: 'p3', name: 'Café moulu', categoryId: 'cat-food' },
+    ];
+    const r = parseReceipt(lines(`BIM\nLAIT CENTRALE 1L 7,50\nPAIN C0MPLET 3,00\nCAFE MOULU 30,00\nBISCUIT 5,00\nTOTAL 45,50`), { today, products });
+    expect(r.items?.value.map((i) => [i.name, i.productId, i.categoryId])).toEqual([
+      ['Lait Centrale 1L', 'p1', 'cat-food'],
+      ['Pain complet', 'p2', 'cat-bread'],
+      ['Café moulu', 'p3', 'cat-food'],
+      ['Biscuit', null, null],
+    ]);
+    expect(r.productCategoryId).toBe('cat-food');
+  });
+
+  it('a near match shared by two products matches neither', () => {
+    const products = [
+      { id: 'p1', name: 'Yaourt fraisa', categoryId: null },
+      { id: 'p2', name: 'Yaourt fraisb', categoryId: null },
+    ];
+    const r = parseReceipt(lines(`BIM\nYAOURT FRAISE 4,00\nTOTAL 4,00`), { today, products });
+    expect(r.items?.value[0]).toMatchObject({ name: 'Yaourt Fraise', productId: null });
+  });
+});
+
+describe('dates', () => {
+  const date = (text: string) => parseReceipt(lines(`TOTAL 10,00\n${text}`), { today }).date;
+
+  it('with a time, a label, "Le", two-digit years', () => {
+    expect(date('25/10/2026 14:32:01')).toMatchObject({ value: '2026-10-25', confidence: 'high' });
+    expect(date('DATE: 25/10/26')).toMatchObject({ value: '2026-10-25', confidence: 'high' });
+    expect(date('Le 25-10-2026 a 14h32')).toMatchObject({ value: '2026-10-25', confidence: 'high' });
+  });
+
+  it('French and English month names', () => {
+    expect(date('25 OCT 2026').value).toBe('2026-10-25');
+    expect(date('Le 25 octobre 2026').value).toBe('2026-10-25');
+    expect(date('3 août 2026').value).toBe('2026-08-03');
+    expect(date('1er sept. 2026').value).toBe('2026-09-01');
+    expect(date('25-OCT-26').value).toBe('2026-10-25');
+    expect(date('Oct 25, 2026').value).toBe('2026-10-25');
+    expect(date('JUIN 2026').source).toBeNull();
+  });
+
+  it('OCR slips inside digit groups (O for 0, l for 1), one level less sure', () => {
+    expect(date('27/1O/2026')).toMatchObject({ value: '2026-10-27', confidence: 'medium' });
+    expect(date('O5/l0/2026')).toMatchObject({ value: '2026-10-05', confidence: 'medium' });
+  });
+
+  it('dates glued to a ticket number or a time, one level less sure', () => {
+    expect(date('N°004225/10/2026')).toMatchObject({ value: '2026-10-25', confidence: 'medium' });
+    expect(date('25/10/202614:32')).toMatchObject({ value: '2026-10-25', confidence: 'medium' });
+  });
+
+  it('still day first, never swapped; future and old dates rejected', () => {
+    expect(date('10/27/2026').source).toBeNull();
+    expect(date('25 DEC 2026').source).toBeNull();
+    expect(date('25 DEC 2020').source).toBeNull();
   });
 });

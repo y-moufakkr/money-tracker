@@ -30,9 +30,19 @@ export default function ProductsScreen() {
             onChangeText={setSearch}
             leading={<Icon name="search" size={20} color={c.textFaint} />}
           />
-          <Text variant="caption" tone="muted" style={{ marginBottom: space.md }}>
+          <Text variant="caption" tone="muted" style={{ marginBottom: space.sm }}>
             Products are added when you itemise a purchase. Prices are per kg, L or piece when the recorded units allow it.
           </Text>
+          <View style={{ backgroundColor: c.surface, marginBottom: space.md }}>
+            <ListItem
+              icon="sell"
+              iconColor={c.primary}
+              title="Usual prices"
+              subtitle="Used to estimate items without a price"
+              chevron
+              onPress={() => router.push('/products/prices')}
+            />
+          </View>
         </View>
       }
       ListEmptyComponent={

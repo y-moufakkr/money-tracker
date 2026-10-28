@@ -100,6 +100,7 @@ export default function RootLayout() {
                 <Stack.Screen name="budgets/index" options={{ title: 'Budgets' }} />
                 <Stack.Screen name="budgets/edit" options={{ ...modal, title: 'Budget' }} />
                 <Stack.Screen name="products/index" options={{ title: 'Products & prices' }} />
+                <Stack.Screen name="products/prices" options={{ title: 'Usual prices' }} />
                 <Stack.Screen name="products/[id]" options={{ title: 'Product' }} />
                 <Stack.Screen name="merchants/index" options={{ title: 'Merchants' }} />
                 <Stack.Screen name="merchants/[id]" options={{ title: 'Merchant' }} />

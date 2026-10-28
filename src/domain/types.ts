@@ -139,6 +139,8 @@ export type PurchaseItemInput = {
   notes?: string | null;
   /** Tags on this line only. Undefined on input means none. */
   tagIds?: string[];
+  /** The total is an estimated share of the amount paid, not a recorded price. */
+  estimated?: boolean;
 };
 
 export type PurchaseItem = PurchaseItemInput & {

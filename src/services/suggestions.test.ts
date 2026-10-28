@@ -4,8 +4,8 @@ import { addDays } from '@/domain/dates';
 import { categoriesFor } from '@/components/entry-pickers';
 import { createTestDb } from '@/test/node-db';
 import { DH, personalAccount, today } from '@/test/fixtures';
-import { saveExpense, saveIncome } from './ledger';
-import { listCategories, suggestMerchants } from './queries';
+import { deleteTransaction, saveExpense, saveIncome } from './ledger';
+import { listCategories, listProductNames, suggestMerchants } from './queries';
 
 let db: Db;
 
@@ -43,5 +43,31 @@ describe('entry suggestions from history', () => {
     const business = categoriesFor(all, 'business');
     expect(business).toHaveLength(all.length);
     expect(companyIds.has(business[0].id)).toBe(true);
+  });
+});
+
+describe('products for scanned receipts', () => {
+  const item = (name: string, total: number) => ({ lineKind: 'product' as const, name, quantityMilli: null, unit: null, unitPriceMinor: null, totalMinor: DH(total) });
+
+  it('lists every product with the category it is usually bought under (deleted expenses left out)', async () => {
+    const wallet = await personalAccount(db, 'Wallet', 'cash', 1000);
+    await saveExpense(db, { date: addDays(today, -3), amountMinor: DH(10), accountId: wallet, categoryId: 'sys-cat-groceries', items: [item('Lait', 10)] });
+    await saveExpense(db, { date: addDays(today, -2), amountMinor: DH(12), accountId: wallet, categoryId: 'sys-cat-groceries', items: [item('lait', 12)] });
+    await saveExpense(db, { date: addDays(today, -1), amountMinor: DH(9), accountId: wallet, categoryId: 'sys-cat-snacks', items: [item('Lait', 9)] });
+    await saveExpense(db, { date: today, amountMinor: DH(6), accountId: wallet, categoryId: 'sys-cat-coffee', items: [item('Café', 6)] });
+    // Pain: bought once without a category; two deleted expenses under Restaurants do not count.
+    await saveExpense(db, { date: today, amountMinor: DH(4), accountId: wallet, items: [item('Pain', 4)] });
+    for (let i = 0; i < 2; i++) {
+      const gone = await saveExpense(db, { date: today, amountMinor: DH(5), accountId: wallet, categoryId: 'sys-cat-restaurants', items: [item('Pain', 5)] });
+      await deleteTransaction(db, gone);
+    }
+
+    const products = await listProductNames(db);
+    // One product per name (the ledger reuses it case-insensitively).
+    expect(products.map((p) => [p.name, p.categoryId])).toEqual([
+      ['Café', 'sys-cat-coffee'],
+      ['Lait', 'sys-cat-groceries'],
+      ['Pain', null],
+    ]);
   });
 });

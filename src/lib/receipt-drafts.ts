@@ -1,4 +1,4 @@
-import type { ReceiptParse } from '@/domain/receipt-parse';
+import type { OcrResult, ReceiptParse } from '@/domain/receipt-parse';
 import type { PickedPhoto } from './receipt-photo';
 
 /**
@@ -11,6 +11,11 @@ export type ReceiptDraft = {
   parse: ReceiptParse | null;
   /** Set when reading the text failed; the photo is still attached. */
   error: string | null;
+  /**
+   * What the OCR read (lines, boxes, confidence), kept only in memory so it can be shared from the
+   * form to grow the parser's test corpus. Never stored in the database.
+   */
+  ocr: OcrResult | null;
 };
 
 const drafts = new Map<string, ReceiptDraft>();
@@ -28,4 +33,13 @@ export function getDraft(id: string | undefined): ReceiptDraft | null {
 
 export function dropDraft(id: string | undefined) {
   if (id) drafts.delete(id);
+}
+
+/**
+ * The OCR result as a receipt fixture (`src/domain/__fixtures__/receipts/<name>.json`): one line
+ * per recognised line so fixtures stay readable and diff well.
+ */
+export function ocrExportJson(ocr: OcrResult, source: string): string {
+  const head = JSON.stringify({ source, width: ocr.width, height: ocr.height }).slice(1, -1);
+  return `{\n ${head},\n "lines": [\n${ocr.lines.map((l) => `  ${JSON.stringify(l)}`).join(',\n')}\n ]\n}\n`;
 }

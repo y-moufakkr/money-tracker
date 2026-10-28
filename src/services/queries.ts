@@ -296,6 +296,7 @@ export async function getTransaction(db: Db, id: string): Promise<TransactionDet
       total_minor: number | null;
       notes: string | null;
       sort_order: number;
+      estimated: number;
     }>('SELECT * FROM purchase_items WHERE transaction_id = ? ORDER BY sort_order', [id]),
     db.all<{ id: string; amount_minor: number; currency: string }>(
       'SELECT id, amount_minor, currency FROM transactions WHERE parent_id = ? AND deleted_at IS NULL',
@@ -358,6 +359,7 @@ export async function getTransaction(db: Db, id: string): Promise<TransactionDet
       totalMinor: i.total_minor,
       notes: i.notes,
       sortOrder: i.sort_order,
+      estimated: i.estimated === 1,
       tagIds: itemTags.filter((x) => x.item_id === i.id).map((x) => x.tag_id),
     })),
     fees: fees.map((f) => ({ id: f.id, amountMinor: f.amount_minor, currency: f.currency })),
@@ -601,12 +603,30 @@ export async function listMerchantNames(db: Db): Promise<{ id: string; name: str
   return db.all<{ id: string; name: string }>('SELECT id, name FROM merchants WHERE is_archived = 0 ORDER BY name');
 }
 
+/**
+ * Every product, for matching a scanned receipt's lines, with the category it is usually bought
+ * under: the product's own category if set, otherwise the most common category of the live,
+ * non-archived expenses it was bought in (the latest on a tie).
+ */
+export async function listProductNames(db: Db): Promise<{ id: string; name: string; categoryId: string | null }[]> {
+  const rows = await db.all<{ id: string; name: string; category_id: string | null }>(
+    `SELECT p.id, p.name, COALESCE(p.category_id, (
+       SELECT t.category_id FROM purchase_items pi
+       JOIN transactions t ON t.id = pi.transaction_id
+       JOIN categories c ON c.id = t.category_id
+       WHERE pi.product_id = p.id AND t.deleted_at IS NULL AND t.kind = 'expense' AND c.is_archived = 0
+       GROUP BY t.category_id ORDER BY COUNT(*) DESC, MAX(t.date) DESC LIMIT 1)) AS category_id
+     FROM products p ORDER BY p.name`,
+  );
+  return rows.map((r) => ({ id: r.id, name: r.name, categoryId: r.category_id }));
+}
+
 export async function suggestProducts(db: Db, query = '', limit = 6): Promise<{ name: string; unit: string | null; lastUnitPriceMinor: number | null }[]> {
   const q = query.trim();
   const rows = await db.all<{ name: string; default_unit: string | null; last_price: number | null }>(
     `SELECT p.name, p.default_unit,
        (SELECT pi.unit_price_minor FROM purchase_items pi JOIN transactions t ON t.id = pi.transaction_id
-        WHERE pi.product_id = p.id AND t.deleted_at IS NULL AND pi.unit_price_minor IS NOT NULL
+        WHERE pi.product_id = p.id AND t.deleted_at IS NULL AND pi.unit_price_minor IS NOT NULL AND pi.estimated = 0
         ORDER BY t.date DESC, pi.created_at DESC LIMIT 1) AS last_price
      FROM products p
      ${q ? 'WHERE p.name LIKE ?' : ''}
@@ -635,4 +655,6 @@ export async function setSetting(db: Db, key: string, value: string): Promise<vo
 export const SETTING = {
   lastExpenseSource: 'last_expense_source',
   lastIncomeAccount: 'last_income_account',
+  /** '1': scanned receipts offer "Share OCR data" (to add real receipts to the parser's tests). */
+  receiptOcrExport: 'receipt_ocr_export',
 } as const;

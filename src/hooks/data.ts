@@ -23,6 +23,7 @@ import {
   suggestProducts,
   type TransactionFilter,
 } from '@/services/queries';
+import { loadPriceRefs, priceBook } from '@/services/prices';
 import { listReconciliations } from '@/services/reconciliation';
 import { fiscalYearReport, listFiscalYears, listReserves } from '@/services/company';
 import { companyAnalytics } from '@/services/company-analytics';
@@ -390,6 +391,17 @@ export function useTransactionPlans(transactionId: string | undefined) {
     queryFn: async () => ({ debt: await transactionDebt(db, transactionId!), expected: await transactionExpected(db, transactionId!) }),
     enabled: !!transactionId,
   });
+}
+
+/** Usual prices for estimating items without a price (your purchases, your list, the starter list). */
+export function usePriceRefs() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'price-refs'], queryFn: () => loadPriceRefs(db) });
+}
+
+export function usePriceBook() {
+  const db = useDb();
+  return useQuery({ queryKey: [LEDGER, 'price-book'], queryFn: () => priceBook(db) });
 }
 
 /** Runs a write against the DB and refreshes every ledger-derived query on success. */

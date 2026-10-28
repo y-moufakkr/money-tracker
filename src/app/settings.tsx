@@ -8,11 +8,12 @@ import { DATABASE_NAME } from '@/db/expo';
 import { SCHEMA_VERSION } from '@/db/migrations';
 import { todayISO } from '@/domain/dates';
 import { bpToInput, formatRate, parsePercentBp, parseRateMicros, SUPPORTED_CURRENCIES } from '@/domain/money';
-import { useAccountBalances, useCompanies, useLedgerMutation, useRates } from '@/hooks/data';
+import { useAccountBalances, useCompanies, useLedgerMutation, useRates, useSetting } from '@/hooks/data';
 import { updateCompany, type CompanyInput } from '@/services/accounts';
 import { notify } from '@/lib/confirm';
 import { setRate } from '@/services/fx';
-import { ChipGroup, Field, TextField } from '@/ui/fields';
+import { SETTING, setSetting } from '@/services/queries';
+import { ChipGroup, Field, TextField, Toggle } from '@/ui/fields';
 import { Button, Card, Chip, Divider, ListItem, Row, SectionHeader, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 import type { Company, PayoutMode, TvaMode } from '@/domain/types';
@@ -117,6 +118,8 @@ export default function SettingsScreen() {
   const [currency, setCurrency] = useState('EUR');
   const [rate, setRateText] = useState('');
   const addRate = useLedgerMutation((db, micros: number) => setRate(db, currency, micros, todayISO()));
+  const ocrExport = useSetting(SETTING.receiptOcrExport).data === '1';
+  const setOcrExport = useLedgerMutation((db, on: boolean) => setSetting(db, SETTING.receiptOcrExport, on ? '1' : '0'));
   const micros = rate.trim() ? parseRateMicros(rate) : null;
 
   const latest = new Map<string, (typeof rates)[number]>();
@@ -208,6 +211,16 @@ export default function SettingsScreen() {
 
       <SectionHeader title="Backup & export" />
       <BackupSection />
+
+      <SectionHeader title="Developer" />
+      <Card style={{ marginBottom: space.sm }}>
+        <Toggle
+          label="Share OCR data from scans"
+          description="Scanned receipts show “Share OCR data”: the text, positions and confidence that were read, to add the receipt to the reader's tests. Nothing is stored or sent unless you share it."
+          value={ocrExport}
+          onChange={(on) => setOcrExport.mutate(on)}
+        />
+      </Card>
 
       <SectionHeader title="About" />
       <Card style={{ gap: 4 }}>

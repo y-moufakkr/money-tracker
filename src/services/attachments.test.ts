@@ -301,7 +301,7 @@ describe('photos in backups', () => {
     const db = await createTestDb(5);
     await populate(db);
     const before = await dumpData(db);
-    expect(await migrate(db)).toBe(6);
+    expect(await migrate(db, 6)).toBe(6);
     expect(await dumpData(db)).toEqual({ ...before, attachments: [] });
   });
 });

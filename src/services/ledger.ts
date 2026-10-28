@@ -151,6 +151,21 @@ function validateItems(items: PurchaseItemInput[]) {
     if (it.lineKind !== 'product' && it.totalMinor === null) {
       throw new LedgerError(`${label}: a ${it.lineKind} line needs an amount.`);
     }
+    if (it.estimated && (it.lineKind !== 'product' || it.totalMinor === null)) {
+      throw new LedgerError(`${label}: only an item with an amount can be estimated.`);
+    }
+  }
+}
+
+/**
+ * Estimates split the amount paid, so lines that include one must add up to exactly that amount;
+ * otherwise an estimate would count money that was not paid (or leave some out).
+ */
+function assertEstimatesAddUp(items: PurchaseItemInput[], amountMinor: number) {
+  if (!items.some((it) => it.estimated)) return;
+  const sum = items.reduce((s, it) => s + (it.totalMinor ?? 0) * (it.lineKind === 'discount' ? -1 : 1), 0);
+  if (sum !== amountMinor) {
+    throw new LedgerError('The estimated prices no longer add up to the amount paid. Estimate them again, or enter the prices.');
   }
 }
 
@@ -200,6 +215,8 @@ async function insertItems(tx: Db, transactionId: string, items: PurchaseItemInp
         ts,
       ],
     );
+    // `estimated` defaults to 0 (v7); set only when needed, so older schemas built in tests still take items.
+    if (it.estimated) await tx.run('UPDATE purchase_items SET estimated = 1 WHERE id = ?', [itemId]);
     const tagIds = [...new Set(it.tagIds ?? [])];
     await assertTags(tx, tagIds);
     for (const tagId of tagIds) {
@@ -314,6 +331,7 @@ export async function saveExpense(db: Db, input: ExpenseInput, id: string | null
   assertDate(input.date);
   const items = input.items ?? [];
   validateItems(items);
+  assertEstimatesAddUp(items, input.amountMinor);
 
   return db.transaction(async (tx) => {
     if (id) await requireEditable(tx, id, 'expense');

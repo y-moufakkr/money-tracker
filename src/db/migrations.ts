@@ -683,6 +683,27 @@ const MIGRATIONS: Migration[] = [
       await tx.exec(changeTriggersSql('attachments'));
     },
   },
+  {
+    version: 7,
+    name: 'estimated item prices and own price list',
+    up: async (tx) => {
+      // An estimated line's total is a share of the amount paid split by usual prices: it counts
+      // as spending but is never used as a price. `price_refs` holds the user's own usual prices.
+      await tx.exec(`
+        ALTER TABLE purchase_items ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0 CHECK (estimated IN (0, 1));
+
+        CREATE TABLE price_refs (
+          id TEXT PRIMARY KEY NOT NULL,
+          name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          unit TEXT NOT NULL,
+          price_minor INTEGER NOT NULL CHECK (price_minor > 0),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      await tx.exec(changeTriggersSql('price_refs'));
+    },
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

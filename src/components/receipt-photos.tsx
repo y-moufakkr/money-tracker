@@ -95,11 +95,12 @@ export function PhotoStrip({
 }
 
 /** "Check this" under a field filled from a receipt; louder when the reading was uncertain. */
-export function ReceiptHint({ confidence }: { confidence: Confidence }) {
+/** "Read from the receipt: check this" under a prefilled field (amber when not sure). `inline` inside a card. */
+export function ReceiptHint({ confidence, inline = false }: { confidence: Confidence; inline?: boolean }) {
   const c = useColors();
   const low = confidence === 'low';
   return (
-    <Row gap={4} style={{ marginTop: -space.sm, marginBottom: space.md }}>
+    <Row gap={4} style={inline ? undefined : { marginTop: -space.sm, marginBottom: space.md }}>
       <Icon name={low ? 'help' : 'document_scanner'} size={14} color={low ? c.warning : c.textMuted} />
       <Text variant="caption" color={low ? c.warning : c.textMuted}>
         {low ? 'Read from the receipt, not sure: check this' : 'Read from the receipt: check this'}

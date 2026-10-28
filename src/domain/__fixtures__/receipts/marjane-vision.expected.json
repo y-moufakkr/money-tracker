@@ -1,0 +1,16 @@
+{
+  "notes": "Marjane Safi, cash. Letter-spaced \"T O T A L\" with its amount printed lower; \"dont droits de timbre\" read as \"NONT\"; department subtotals (BISCUITERIE, MENAGE) after each line; TVA table at the bottom (148.90 TTC leaves out the stamp duty).",
+  "context": { "today": "2017-05-25", "merchants": [{ "id": "m1", "name": "Marjane" }] },
+  "total": "149.27",
+  "final": null,
+  "amount": "149.27",
+  "date": "2017-05-21",
+  "merchant": "Marjane",
+  "merchantId": "m1",
+  "unread": "0.00",
+  "items": [
+    { "kind": "product", "name": "Chocolat Galaxy", "qty": "2", "unit": null, "unitPrice": "4.95", "total": "9.90" },
+    { "kind": "product", "name": "Friteuse Emaill", "qty": null, "unit": null, "unitPrice": null, "total": "139.00" },
+    { "kind": "charge", "name": "Droits de timbre", "qty": null, "unit": null, "unitPrice": null, "total": "0.37" }
+  ]
+}
